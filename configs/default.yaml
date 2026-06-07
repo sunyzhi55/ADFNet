@@ -1,0 +1,49 @@
+seed: 42
+
+data:
+  root: "/data3/wangchangmiao/shenxy/Code/gaze/CalibratedData"
+  window_size: 256
+  stride: 64
+  local_mean_size: 16
+  landmark_dim: 70
+  min_confidence: null
+
+distribution:
+  feature_window: 256
+  reference_samples: 512
+  soft_dtw_reference_samples: 64
+  soft_dtw_gamma: 1.0
+  eps: 1.0e-6
+
+model:
+  input_dim: 3
+  dist_feat_dim: 3
+  dist_hidden_dim: 32
+  dist_out_dim: 16
+  mamba_dim: 128
+  mamba_layers: 2
+  fusion_dim: 144
+  landmark_dim: 70
+  dropout: 0.2
+
+training:
+  epochs: 30
+  batch_size: 128
+  learning_rate: 1.0e-3
+  weight_decay: 1.0e-4
+  num_workers: 8
+  pin_memory: true
+  persistent_workers: true
+  threshold: 0.5
+  grad_clip_norm: 5.0
+  device: "cuda:0"
+  output_dir: "./outputs"
+  early_stopping:
+    enabled: true
+    monitor: "val_auc"
+    mode: "max"
+    patience: 8
+    min_delta: 1.0e-4
+
+evaluation:
+  metrics_csv: metrics.csv
