@@ -1,112 +1,120 @@
 # ADFNet：任务完成驱动的跨受试者疲劳检测框架
 
-ADFNet 基于 `TF-GAM Task-Completion-Driven Adaptive Modeling for Robust Cross-Subject Fatigue Detection.pdf` 和 `网络架构流程.pdf` 实现。模型将疲劳/专注状态建模为“视线动态与任务锚定轨迹之间的耦合质量”，并通过分布对齐、Mamba 时序编码和 GRL 对抗解耦提升跨受试者泛化能力。
+ADFNet 基于 TF-GAM 与当前目录中的网络架构流程实现。模型将疲劳/专注状态建模为视线动态与任务目标轨迹之间的耦合质量，并通过 Gamma 分布偏移、Mamba 时序编码和 GRL 对抗解耦提升跨受试者泛化能力。
 
-## 核心模块
+## 核心功能
 
 - ADF 三通道特征：空间漂移、一阶差分、局部滑动均值。
-- 清醒状态 Gamma 基准分布：仅使用训练 fold 的 alert 数据拟合，避免测试主体泄露。
+- 任务模式过滤：支持只训练/评估 `easy`、只训练/评估 `hard`、或 `all` 混合任务。
+- 清醒状态 Gamma 基准分布：只使用当前训练 fold 的 alert 样本拟合，避免测试主体泄露。
 - 分布偏移分支：Mean Log-Likelihood、Wasserstein 距离、soft-DTW 距离。
-- 真实 `mamba-ssm` 时序分支：提取长程视线动态。
-- GRL 对抗解耦：利用 landmarks 回归头迫使融合表征剥离个体物理指纹。
-- LOSO 与 GroupKFold：按 subject 物理隔离评估跨人泛化能力。
-- 早停策略：默认监控 `val_auc`，连续 8 个 epoch 无显著提升后停止训练。
-
-## 目录结构
-
-```text
-configs/default.yaml          # 默认配置
-requirements.txt              # Python 依赖
-scripts/train.py              # 单次训练入口
-scripts/evaluate.py           # checkpoint 评估入口
-scripts/run_loso.py           # 留一受试者验证
-scripts/run_group_kfold.py    # 按受试者分组 K 折验证
-src/data                      # JSONL 读取、ADF 特征、subject split
-src/models                    # ADFNet、Mamba、Gamma 分布、GRL、预测头
-src/training                  # 训练循环、损失、指标、随机种子
-tests                         # 单元测试
-```
-
-## 环境安装
-
-建议在 Linux/CUDA 环境安装，因为 `mamba-ssm` 在 Windows 上可能需要额外编译配置。
-
-```bash
-pip install -r requirements.txt
-```
-
-本项目按设计使用真实 `mamba-ssm`，不提供近似替代编码器。
+- 真实 `mamba-ssm` 时序分支。
+- GRL 对抗解耦 landmark 物理指纹。
+- LOSO 与 GroupKFold 按 subject 物理隔离。
+- 早停策略与 checkpoint 评估 CSV 导出。
+- 混淆矩阵以数值列写入 CSV，避免矩阵对象/字符串导致解析问题。
 
 ## 数据格式
 
-`configs/default.yaml` 中的 `data.root` 指向 JSONL 数据目录。文件名格式：
+配置文件中的 `data.root` 指向 JSONL 数据目录。文件名格式：
 
 ```text
 [subject_id]_[easy|hard]_[alert|sleep].jsonl
 ```
 
-代码也兼容历史命名 `sleepy`，但推荐统一使用 `sleep`。
+代码兼容历史标签名 `sleepy`，但推荐统一使用 `sleep`。
 
-easy 任务每行示例：
+## 任务模式
 
-```json
-{
-  "timestamp": 4.16,
-  "frame_idx": 100,
-  "gaze_screen_tf_calibrate_xy_px": [320, 240],
-  "target_xy_px": [300, 220],
-  "bbox": [0, 0, 10, 10],
-  "landmarks": [[0, 1], [2, 3]],
-  "confidence": 0.99
-}
+在 [configs/default.yaml](configs/default.yaml) 中设置：
+
+```yaml
+data:
+  task_mode: "all"  # all / easy / hard
 ```
 
-hard 任务将 `target_xy_px` 替换为多目标中心：
-
-```json
-{
-  "target_centers_xy_px": [[100, 100], [320, 240], [500, 300]]
-}
-```
-
-标签映射：`alert=0`，`sleep=1`。
-
-## 训练与评估
-
-检查配置和数据窗口：
+也可以用命令行临时覆盖：
 
 ```bash
-python scripts/train.py --config configs/default.yaml --dry-run
+python scripts/run_loso.py --config configs/default.yaml --task-mode easy
+python scripts/run_loso.py --config configs/default.yaml --task-mode hard
+python scripts/run_loso.py --config configs/default.yaml --task-mode all
 ```
 
-普通训练：
+所有入口都支持 `--task-mode`：`train.py`、`run_loso.py`、`run_group_kfold.py`、`evaluate.py`。
+
+## 训练
+
+检查数据和窗口数量：
 
 ```bash
-python scripts/train.py --config configs/default.yaml
+python scripts/train.py --config configs/default.yaml --dry-run --task-mode all
 ```
 
 LOSO：
 
 ```bash
-python scripts/run_loso.py --config configs/default.yaml
+python scripts/run_loso.py --config configs/default.yaml --task-mode easy
+python scripts/run_loso.py --config configs/default.yaml --task-mode hard
+python scripts/run_loso.py --config configs/default.yaml --task-mode all
 ```
 
 调试单个 fold：
 
 ```bash
-python scripts/run_loso.py --config configs/default.yaml --max-folds 1
+python scripts/run_loso.py --config configs/default.yaml --task-mode all --max-folds 1
 ```
 
 GroupKFold：
 
 ```bash
-python scripts/run_group_kfold.py --config configs/default.yaml --n-splits 5
+python scripts/run_group_kfold.py --config configs/default.yaml --n-splits 5 --task-mode all
 ```
 
-评估 checkpoint：
+## 独立评估
+
+读取已训练好的模型，在指定测试数据上评估并导出 CSV：
 
 ```bash
-python scripts/evaluate.py --config configs/default.yaml --checkpoint outputs/groupkfold_1/best.pt
+python scripts/evaluate.py \
+  --config configs/default.yaml \
+  --checkpoint outputs/loso_01_all/best.pt \
+  --data-root /path/to/test_jsonl \
+  --task-mode all \
+  --output-csv outputs/eval_external_all.csv
+```
+
+如果不传 `--data-root`，默认使用配置文件中的 `data.root`。如果不传 `--output-csv`，默认写入：
+
+```text
+outputs/eval_metrics_<task_mode>.csv
+```
+
+## CSV 指标字段
+
+基础指标：
+
+```text
+auc, acc, f1, precision, recall
+```
+
+混淆矩阵不会以 `[[tn, fp], [fn, tp]]` 这种对象形式写入 CSV，而是拆成四个稳定数值列：
+
+```text
+cm_tn, cm_fp, cm_fn, cm_tp
+```
+
+训练过程的 [history.csv](outputs/history.csv) 会分别包含：
+
+```text
+train_cm_tn, train_cm_fp, train_cm_fn, train_cm_tp
+val_cm_tn, val_cm_fp, val_cm_fn, val_cm_tp
+```
+
+独立评估 CSV 会包含：
+
+```text
+checkpoint, data_root, task_mode, windows, auc, acc, f1, precision, recall, cm_tn, cm_fp, cm_fn, cm_tp
 ```
 
 ## 早停策略
@@ -123,31 +131,35 @@ training:
     min_delta: 1.0e-4
 ```
 
-含义：
+`best.pt` 按早停监控指标保存。每个 epoch 的早停状态写入 `history.csv`。
 
-- `monitor`：监控 `history.csv` 中的字段，例如 `val_auc`、`val_acc`、`val_loss`。
-- `mode`：`max` 表示越大越好，`min` 表示越小越好。
-- `patience`：连续多少个 epoch 没有超过 `min_delta` 的改善后停止。
-- `min_delta`：判定“有效提升”的最小变化量。
+## 加速相关
 
-`best.pt` 会按照早停监控指标保存，与停止条件保持一致。每个 epoch 的早停状态会写入 `history.csv`，包括 `early_stop_best`、`early_stop_bad_epochs`、`early_stop_improved`、`early_stopped`。
+当前实现会在每个 fold 开始前预计算分布统计特征，避免每个 batch 重复计算 soft-DTW。可调参数：
 
-## 输出内容
+```yaml
+training:
+  batch_size: 128
+  num_workers: 8
+  pin_memory: true
+  persistent_workers: true
 
-- `outputs/<fold>/best.pt`
-- `outputs/<fold>/history.csv`
-- `outputs/loso_metrics.csv`
-- `outputs/group_kfold_metrics.csv`
-- `outputs/run.log`
+distribution:
+  soft_dtw_reference_samples: 64
+```
 
-## 防止数据泄露
+如果 CPU 仍然慢，可以把 `soft_dtw_reference_samples` 降到 `32`。
 
-LOSO 和 GroupKFold 都按 `subject_id` 切分。Gamma 清醒基准分布只使用当前训练 fold 的 alert 样本拟合，再应用到训练集和测试集窗口。不要先切窗口再随机拆分训练/测试集，否则同一受试者的窗口会同时进入两侧，导致跨人泛化指标虚高。
+## 输出
+
+- `outputs/<fold>_<task_mode>/best.pt`
+- `outputs/<fold>_<task_mode>/history.csv`
+- `outputs/loso_metrics_<task_mode>.csv`
+- `outputs/group_kfold_metrics_<task_mode>.csv`
+- `outputs/eval_metrics_<task_mode>.csv`
 
 ## 测试
 
 ```bash
 pytest
 ```
-
-当前测试覆盖 ADF 特征计算、JSONL 数据集窗口切分、landmarks 点数不一致处理，以及模型前向 shape。

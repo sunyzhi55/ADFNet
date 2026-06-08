@@ -9,7 +9,7 @@ import torch
 from torch.utils.data import Dataset
 
 from data.features import average_landmarks, compute_adf_features
-from data.io import SequenceInfo, discover_sequences, iter_jsonl
+from data.io import SequenceInfo, discover_sequences, filter_sequences_by_task, iter_jsonl
 
 
 @dataclass(frozen=True)
@@ -33,11 +33,13 @@ class ADFWindowDataset(Dataset):
         local_mean_size: int = 16,
         landmark_dim: int = 70,
         min_confidence: float | None = None,
+        task_mode: str = "all",
     ) -> None:
         if sequences is None:
             if root is None:
                 raise ValueError("root and sequences cannot both be None")
             sequences = discover_sequences(root)
+        sequences = filter_sequences_by_task(list(sequences), task_mode)
         if window_size <= 0:
             raise ValueError("window_size must be positive")
         if stride <= 0:

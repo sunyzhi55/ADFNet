@@ -24,7 +24,7 @@ class ADFNet(nn.Module):
     ) -> None:
         super().__init__()
         if fusion_dim != mamba_dim + dist_out_dim:
-            raise ValueError("fusion_dim 必须等于 mamba_dim + dist_out_dim")
+            raise ValueError("fusion_dim must equal mamba_dim + dist_out_dim")
         self.distribution_branch = DistributionBranch(
             input_dim=dist_feat_dim,
             hidden_dim=dist_hidden_dim,
@@ -51,7 +51,7 @@ class ADFNet(nn.Module):
     ) -> dict[str, torch.Tensor]:
         if dist_stats is None:
             if gamma_reference is None:
-                raise ValueError("dist_stats 和 gamma_reference 至少提供一个")
+                raise ValueError("dist_stats and gamma_reference cannot both be None")
             dist_stats = gamma_reference.features(adf, feature_window=dist_feature_window)
         dist_feature = self.distribution_branch(dist_stats)
         temp_feature = self.temporal_encoder(adf)

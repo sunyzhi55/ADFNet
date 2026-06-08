@@ -2,6 +2,7 @@ seed: 42
 
 data:
   root: "/data3/wangchangmiao/shenxy/Code/gaze/CalibratedData"
+  task_mode: "all"
   window_size: 256
   stride: 64
   local_mean_size: 16
@@ -27,7 +28,7 @@ model:
   dropout: 0.2
 
 training:
-  epochs: 30
+  epochs: 100
   batch_size: 128
   learning_rate: 1.0e-3
   weight_decay: 1.0e-4
@@ -36,13 +37,13 @@ training:
   persistent_workers: true
   threshold: 0.5
   grad_clip_norm: 5.0
-  device: "cuda:0"
+  device: "cuda:4"
   output_dir: "./outputs"
   early_stopping:
     enabled: true
     monitor: "val_auc"
     mode: "max"
-    patience: 8
+    patience: 20
     min_delta: 1.0e-4
 
 evaluation:

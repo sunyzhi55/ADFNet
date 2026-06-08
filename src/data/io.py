@@ -9,10 +9,10 @@ from typing import Any, Iterable
 
 
 FILENAME_RE = re.compile(
-    r"^(?P<subject>.+)_(?P<task>easy|hard)_(?P<label>alert|sleepy)\.jsonl$",
+    r"^(?P<subject>.+)_(?P<task>easy|hard)_(?P<label>alert|sleep|sleepy)\.jsonl$",
     re.I,
 )
-LABEL_MAP = {"alert": 0, "sleepy": 1}
+LABEL_MAP = {"alert": 0, "sleep": 1, "sleepy": 1}
 
 
 @dataclass(frozen=True)
@@ -29,7 +29,7 @@ def parse_sequence_filename(path: str | Path) -> SequenceInfo:
     match = FILENAME_RE.match(path.name)
     if not match:
         raise ValueError(
-            f"Invalid file name, expected [subject_id]_[easy|hard]_[alert|sleepy].jsonl: {path.name}"
+            f"Invalid file name, expected [subject_id]_[easy|hard]_[alert|sleep].jsonl: {path.name}"
         )
     task_type = match.group("task").lower()
     label_name = match.group("label").lower()
@@ -46,13 +46,20 @@ def discover_sequences(root: str | Path) -> list[SequenceInfo]:
     root = Path(root)
     if not root.exists():
         return []
-    sequences: list[SequenceInfo] = []
-    for path in root.rglob("*.jsonl"):
-        sequences.append(parse_sequence_filename(path))
+    sequences = [parse_sequence_filename(path) for path in root.rglob("*.jsonl")]
     return sorted(
         sequences,
         key=lambda item: (item.subject_id, item.task_type, item.label_name, str(item.path)),
     )
+
+
+def filter_sequences_by_task(sequences: list[SequenceInfo], task_mode: str = "all") -> list[SequenceInfo]:
+    task_mode = task_mode.lower()
+    if task_mode in {"all", "both", "easy+hard"}:
+        return list(sequences)
+    if task_mode not in {"easy", "hard"}:
+        raise ValueError("task_mode must be one of: all, easy, hard")
+    return [seq for seq in sequences if seq.task_type == task_mode]
 
 
 def iter_jsonl(path: str | Path) -> Iterable[dict[str, Any]]:
@@ -68,11 +75,6 @@ def iter_jsonl(path: str | Path) -> Iterable[dict[str, Any]]:
 
 
 def parse_points(value: Any) -> list[list[float]]:
-    """Parse point-like fields into [[x, y], ...].
-
-    The raw files may contain [x, y], [[x, y], ...], tuples, stringified lists,
-    flattened landmark vectors, or occasional malformed/empty values.
-    """
     if value is None:
         return []
     if isinstance(value, str):

@@ -37,7 +37,7 @@ def group_kfold_folds(
 ) -> list[SubjectFold]:
     subjects = np.asarray(subject_ids(sequences), dtype=object)
     if n_splits < 2 or n_splits > len(subjects):
-        raise ValueError("n_splits 必须在 [2, subject_count] 范围内")
+        raise ValueError("n_splits must be in [2, subject_count]")
     rng = np.random.default_rng(seed)
     shuffled = subjects.copy()
     rng.shuffle(shuffled)
