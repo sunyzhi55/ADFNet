@@ -6,6 +6,7 @@ import pandas as pd
 import torch
 from torch.utils.data import DataLoader
 from tqdm import tqdm
+from utils.basic import get_optimizer, get_scheduler
 
 from data.dataset import ADFWindowDataset, collect_alert_distances
 from models.adfnet import ADFNet
@@ -66,6 +67,70 @@ class EarlyStopping:
         return False
 
 
+class BestEpochTracker:
+    def __init__(
+        self,
+        monitor: str = "val_auc",
+        mode: str = "max",
+        min_delta: float = 0.0,
+    ) -> None:
+        if mode not in {"max", "min"}:
+            raise ValueError("result_selection.mode must be 'max' or 'min'")
+        self.monitor = monitor
+        self.mode = mode
+        self.min_delta = min_delta
+        self.best_value: float | None = None
+        self.best_row: dict | None = None
+        self.fallback_row: dict | None = None
+
+    def step(self, row: dict) -> bool:
+        if self.fallback_row is None:
+            self.fallback_row = dict(row)
+        current = row.get(self.monitor)
+        if current is None:
+            raise KeyError(f"Result selection monitor '{self.monitor}' was not found in epoch metrics")
+        if current != current:
+            return False
+        current = float(current)
+        if self.best_value is None:
+            self.best_value = current
+            self.best_row = dict(row)
+            return True
+        if self.mode == "max":
+            improved = current > self.best_value + self.min_delta
+        else:
+            improved = current < self.best_value - self.min_delta
+        if improved:
+            self.best_value = current
+            self.best_row = dict(row)
+            return True
+        return False
+
+    def result(self) -> dict:
+        return dict(self.best_row or self.fallback_row or {})
+
+
+def result_selection_from_config(cfg: dict) -> dict:
+    early_cfg = cfg["training"].get("early_stopping", {})
+    selection_cfg = cfg["training"].get("result_selection", {})
+    return {
+        "monitor": selection_cfg.get("monitor", early_cfg.get("monitor", "val_auc")),
+        "mode": selection_cfg.get("mode", early_cfg.get("mode", "max")),
+        "min_delta": selection_cfg.get("min_delta", 0.0),
+    }
+
+
+def selected_metrics_from_row(row: dict, monitor: str, mode: str) -> dict:
+    selected = {
+        "best_epoch": row.get("epoch"),
+        "selection_monitor": monitor,
+        "selection_mode": mode,
+        "selection_value": row.get(monitor),
+    }
+    selected.update({k: v for k, v in row.items() if k.startswith(("train_", "val_"))})
+    return selected
+
+
 def resolve_device(name: str) -> torch.device:
     if name == "auto":
         return torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -89,12 +154,14 @@ def make_model(cfg: dict) -> ADFNet:
 
 
 def run_epoch(
+    epoch: int,
     model: ADFNet,
     loader: DataLoader,
     gamma_reference: GammaReference,
     criterion: ADFNetLoss,
     device: torch.device,
     optimizer: torch.optim.Optimizer | None,
+    scheduler: torch.optim.lr_scheduler.LRScheduler | None,
     grl_lambda: float,
     dist_feature_window: int,
     threshold: float,
@@ -106,7 +173,8 @@ def run_epoch(
     probs: list[float] = []
     total_loss = 0.0
     steps = 0
-    for batch in tqdm(loader, leave=False):
+    pbar = tqdm(loader, desc=f"Epoch {epoch} [{'Train' if is_train else 'Val'}]", leave=False)
+    for batch in pbar:
         use_non_blocking = device.type == "cuda"
         adf = batch["adf"].to(device, non_blocking=use_non_blocking)
         y = batch["label"].to(device, non_blocking=use_non_blocking)
@@ -134,6 +202,13 @@ def run_epoch(
                 if grad_clip_norm is not None and grad_clip_norm > 0:
                     torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=grad_clip_norm)
                 optimizer.step()
+                if scheduler and isinstance(scheduler, torch.optim.lr_scheduler.OneCycleLR):
+                    scheduler.step()
+                current_lr = optimizer.param_groups[0]['lr']
+                pbar.set_postfix({
+                    "loss": f"{losses['loss'].item():.4f}",
+                    "LR": f"{current_lr:.6f}"
+                })
         if torch.isfinite(losses["loss"]):
             total_loss += float(losses["loss"].detach().cpu())
             steps += 1
@@ -165,10 +240,12 @@ def train_fold(
     )
     model = make_model(cfg).to(device)
     criterion = ADFNetLoss()
-    optimizer = torch.optim.AdamW(
+    optimizer = get_optimizer(
+        cfg["training"]["optimizer_name"],
         model.parameters(),
-        lr=cfg["training"]["learning_rate"],
+        lr=cfg["training"]["lr"],
         weight_decay=cfg["training"]["weight_decay"],
+        # momentum=getattr(args, 'momentum', 0.9)
     )
     train_loader = DataLoader(
         train_dataset,
@@ -179,6 +256,7 @@ def train_fold(
         persistent_workers=cfg["training"].get("persistent_workers", False)
         and cfg["training"]["num_workers"] > 0,
     )
+    scheduler = get_scheduler(optimizer, cfg, train_loader)
     val_loader = DataLoader(
         val_dataset,
         batch_size=cfg["training"]["batch_size"],
@@ -190,26 +268,31 @@ def train_fold(
     )
     history: list[dict[str, float]] = []
     early_stopping = EarlyStopping(**cfg["training"].get("early_stopping", {}))
+    best_epoch = BestEpochTracker(**result_selection_from_config(cfg))
     for epoch in range(cfg["training"]["epochs"]):
         lambd = grl_lambda_schedule(epoch, cfg["training"]["epochs"])
         train_metrics, train_loss = run_epoch(
+            epoch,
             model,
             train_loader,
             gamma_reference,
             criterion,
             device,
             optimizer,
+            scheduler,
             lambd,
             cfg["distribution"]["feature_window"],
             cfg["training"]["threshold"],
             cfg["training"].get("grad_clip_norm"),
         )
         val_metrics, val_loss = run_epoch(
+            epoch,
             model,
             val_loader,
             gamma_reference,
             criterion,
             device,
+            None,
             None,
             lambd,
             cfg["distribution"]["feature_window"],
@@ -224,9 +307,17 @@ def train_fold(
             **{f"train_{k}": v for k, v in train_metrics.items()},
             **{f"val_{k}": v for k, v in val_metrics.items()},
         }
-        history.append(row)
+        if scheduler and not isinstance(scheduler, torch.optim.lr_scheduler.OneCycleLR):
+            if isinstance(scheduler, torch.optim.lr_scheduler.ReduceLROnPlateau):
+                scheduler.step(val_loss)
+            else:
+                scheduler.step()
         monitor_improved = early_stopping.step(row)
-        if monitor_improved:
+        row["result_selection_monitor"] = best_epoch.monitor
+        result_improved = best_epoch.step(row)
+        row["result_selection_best"] = best_epoch.best_value
+        row["result_selection_improved"] = result_improved
+        if result_improved:
             torch.save(
                 {
                     "model": model.state_dict(),
@@ -249,11 +340,14 @@ def train_fold(
         row["early_stop_bad_epochs"] = early_stopping.bad_epochs
         row["early_stop_improved"] = monitor_improved
         row["early_stopped"] = early_stopping.should_stop
+        history.append(row)
         pd.DataFrame(history).to_csv(output_dir / "history.csv", index=False)
         if early_stopping.should_stop:
             break
-    final = history[-1] if history else {}
-    return {k.replace("val_", ""): v for k, v in final.items() if k.startswith("val_")}
+    best = best_epoch.result()
+    selected = selected_metrics_from_row(best, best_epoch.monitor, best_epoch.mode)
+    pd.DataFrame([selected]).to_csv(output_dir / "final_metrics.csv", index=False)
+    return selected
 
 
 @torch.no_grad()

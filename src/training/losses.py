@@ -30,7 +30,9 @@ class ADFNetLoss(nn.Module):
 
 
 def grl_lambda_schedule(epoch: int, total_epochs: int) -> float:
-    if total_epochs <= 1:
-        return 1.0
-    progress = epoch / float(total_epochs - 1)
-    return float(2.0 / (1.0 + math.exp(-10.0 * progress)) - 1.0)
+    # if total_epochs <= 1:
+    #     return 1.0
+    # progress = epoch / float(total_epochs - 1)
+    # return float(2.0 / (1.0 + math.exp(-10.0 * progress)) - 1.0)
+    return 0.0
+

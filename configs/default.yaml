@@ -1,8 +1,9 @@
+exp_name: "ADFNet_Exp"
 seed: 42
 
 data:
   root: "/data3/wangchangmiao/shenxy/Code/gaze/CalibratedData"
-  task_mode: "all"
+  task_mode: "easy"
   window_size: 256
   stride: 64
   local_mean_size: 16
@@ -28,23 +29,34 @@ model:
   dropout: 0.2
 
 training:
-  epochs: 100
+  epochs: 1000
   batch_size: 128
-  learning_rate: 1.0e-3
+  optimizer_name: "AdamW"
+  lr: 1.0e-3
   weight_decay: 1.0e-4
-  num_workers: 8
+  momentum: 0.9
+  lr_policy: "onecycle" # options: null, lambda, step, plateau, exp, cosine, onecycle
+  lr_decay: 0.95
+  niter: 50
+  niter_decay: 50
+  lr_decay_iters: 30
+  num_workers: 16
   pin_memory: true
   persistent_workers: true
   threshold: 0.5
   grad_clip_norm: 5.0
-  device: "cuda:4"
+  device: "cuda:0"
   output_dir: "./outputs"
   early_stopping:
     enabled: true
-    monitor: "val_auc"
+    monitor: "val_f1"
     mode: "max"
-    patience: 20
+    patience: 1000
     min_delta: 1.0e-4
+  result_selection:
+    monitor: "val_f1"
+    mode: "max"
+    min_delta: 0.0
 
 evaluation:
   metrics_csv: metrics.csv

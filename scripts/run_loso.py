@@ -16,7 +16,8 @@ from training.seed import set_seed
 from training.trainer import train_fold
 from utils.config import load_config
 from utils.logging import setup_logger
-
+from datetime import datetime
+import time
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run subject-wise LOSO training/evaluation for ADFNet")
@@ -41,7 +42,14 @@ def main() -> None:
     args = parse_args()
     cfg = load_config(args.config)
     set_seed(cfg["seed"])
-    logger = setup_logger(cfg["training"]["output_dir"], name="adfnet_loso")
+
+    timestamp = str(datetime.now().strftime('%Y%m%d_%H%M%S'))
+    cfg["training"]["output_dir"] = f"{cfg['training']['output_dir']}_{timestamp}_{cfg['exp_name']}/"
+    Path(cfg["training"]["output_dir"]).mkdir(exist_ok=True, parents=True)
+    cfg["exp_name"] = f"{cfg['exp_name']}_loso"
+
+    logger = setup_logger(cfg["training"]["output_dir"], name=cfg["exp_name"])
+    
     task_mode = task_mode_from_args(cfg, args.task_mode)
     sequences = filter_sequences_by_task(discover_sequences(cfg["data"]["root"]), task_mode)
     logger.info("Found %d JSONL sequences for task_mode=%s", len(sequences), task_mode)
@@ -76,4 +84,11 @@ def save_fold_metrics(rows: list[dict], output: Path) -> None:
 
 
 if __name__ == "__main__":
+    start_time = time.time()
     main()
+    end_time = time.time()
+    total_seconds = end_time - start_time
+    hours = int(total_seconds // 3600)
+    minutes = int((total_seconds % 3600) // 60)
+    seconds = int(total_seconds % 60)
+    print(f"Total training time: {hours}h {minutes}m {seconds}s")
