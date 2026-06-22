@@ -63,7 +63,7 @@ def average_landmarks(records: list[dict], landmark_dim: int = 70) -> np.ndarray
     """
     frames: list[np.ndarray] = []
     for record in records:
-        points = parse_points(record.get("landmarks"))
+        points = parse_points(record.get("RetinaFace_landmarks"))
         if not points:
             continue
         vector = np.asarray(points, dtype=np.float32).reshape(-1)

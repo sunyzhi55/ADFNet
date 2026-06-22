@@ -7,7 +7,7 @@ data:
   window_size: 256
   stride: 64
   local_mean_size: 16
-  landmark_dim: 70
+  landmark_dim: 10
   min_confidence: null
 
 distribution:
@@ -21,11 +21,11 @@ model:
   input_dim: 3
   dist_feat_dim: 3
   dist_hidden_dim: 32
-  dist_out_dim: 16
+  dist_out_dim: 64
   mamba_dim: 128
   mamba_layers: 2
-  fusion_dim: 144
-  landmark_dim: 70
+  fusion_dim: 192
+  landmark_dim: 10
   dropout: 0.2
 
 training:
@@ -36,6 +36,9 @@ training:
   weight_decay: 1.0e-4
   momentum: 0.9
   lr_policy: "onecycle" # options: null, lambda, step, plateau, exp, cosine, onecycle
+  cos_T0: 20
+  cos_Tmult: 2
+  cos_eta_min: 1.0e-5
   lr_decay: 0.95
   niter: 50
   niter_decay: 50
@@ -60,3 +63,6 @@ training:
 
 evaluation:
   metrics_csv: metrics.csv
+
+
+# ulimit -n 65535 # 增加文件描述符限制，以支持更多的并发数据加载

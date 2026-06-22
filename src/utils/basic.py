@@ -74,17 +74,19 @@ def get_scheduler(optimizer, cfg, train_loader=None):
         scheduler = lr_scheduler.ReduceLROnPlateau(
             optimizer,
             mode='min',
-            factor=0.2,
-            threshold=0.01,
-            patience=5
+            factor=0.5,        # 温和衰减：每次减半
+            patience=10,      # 连续10轮不提升再降lr
+            threshold=1e-4,   # 极小阈值，贴合loss正常波动
+            min_lr=1e-6,      # 限制最低学习率，防止卡死
+            cooldown=3        # 降完lr后，冷却3轮再重新计数
         )
 
     elif policy == 'cosine':
         scheduler = lr_scheduler.CosineAnnealingWarmRestarts(
             optimizer,
-            T_0=10,
-            T_mult=3,
-            eta_min=1e-5
+            T_0 = cfg["training"].get("cos_T0", 10),
+            T_mult = cfg["training"].get("cos_Tmult", 3),
+            eta_min = cfg["training"].get("cos_eta_min", 1e-5)
         )
 
     elif policy == 'exp':
@@ -93,16 +95,28 @@ def get_scheduler(optimizer, cfg, train_loader=None):
     elif policy == 'onecycle':
         if train_loader is None:
             raise ValueError("❌ OneCycleLR 策略需要传入 train_loader 参数以计算 steps_per_epoch")
+        # scheduler = lr_scheduler.OneCycleLR(
+        #     optimizer,
+        #     max_lr=cfg["training"]["lr"] * 5,  # 峰值学习率（通常为初始lr的3~10倍）
+        #     steps_per_epoch=len(train_loader),
+        #     epochs=cfg["training"]["epochs"],
+        #     anneal_strategy='cos',  # 余弦退火
+        #     pct_start=0.1,          # 10% 的时间用于 warm-up
+        #     # div_factor=25.0,        # 初始学习率 = max_lr / div_factor
+        #     # final_div_factor=1e4,   # 最低学习率 = max_lr / final_div_factor
+        #     # three_phase=False       # 可选：是否三阶段策略
+        # )
+        div_factor = 5.0
+        max_lr = cfg["training"]["lr"] * div_factor  # max_lr = base_lr * 10
         scheduler = lr_scheduler.OneCycleLR(
             optimizer,
-            max_lr=cfg["training"]["lr"] * 5,  # 峰值学习率（通常为初始lr的3~10倍）
+            max_lr=max_lr,
             steps_per_epoch=len(train_loader),
             epochs=cfg["training"]["epochs"],
-            anneal_strategy='cos',  # 余弦退火
-            pct_start=0.1,          # 10% 的时间用于 warm-up
-            # div_factor=25.0,        # 初始学习率 = max_lr / div_factor
-            # final_div_factor=1e4,   # 最低学习率 = max_lr / final_div_factor
-            # three_phase=False       # 可选：是否三阶段策略
+            anneal_strategy='cos',
+            pct_start=0.25,        # 改为 25% 步数升温，更稳
+            div_factor=div_factor, # 初始 lr = max_lr / 10 = base_lr
+            final_div_factor=100   # 末端最低 lr = max_lr / 100
         )
 
     else:
