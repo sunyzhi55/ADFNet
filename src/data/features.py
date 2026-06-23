@@ -38,6 +38,13 @@ def compute_adf_features(
 ) -> np.ndarray:
     distances: list[float] = []
     for record in records:
+        deviation = record.get("deviation_px_after_calibrate")
+        if deviation is not None:
+            try:
+                distances.append(float(deviation))
+                continue
+            except (TypeError, ValueError):
+                pass
         gaze_points = parse_points(record.get("gaze_screen_tf_calibrate_xy_px"))
         if not gaze_points:
             gaze_points = parse_points(record.get("gaze_screen_xy_px"))
@@ -76,3 +83,4 @@ def average_landmarks(records: list[dict], landmark_dim: int = 70) -> np.ndarray
     if not frames:
         return np.zeros(landmark_dim, dtype=np.float32)
     return np.mean(np.stack(frames, axis=0), axis=0).astype(np.float32)
+

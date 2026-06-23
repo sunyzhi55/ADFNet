@@ -17,6 +17,7 @@ def _record(idx: int) -> dict:
         "frame_idx": idx,
         "gaze_screen_tf_calibrate_xy_px": [float(idx), 0.0],
         "target_xy_px": [float(idx + 3), 4.0],
+        "deviation_px_after_calibrate": float(idx) + 0.25,
         "bbox": [0, 0, 10, 10],
         "landmarks": [[float(i), float(i + 1)] for i in range(35)],
         "confidence": 0.99,
@@ -43,3 +44,5 @@ def test_dataset_windowing_and_label(tmp_path: Path) -> None:
     assert sample["label"].item() == 1.0
     assert sample["landmarks"].shape[0] == 70
     assert sample["subject_id"] == "S01"
+    assert sample["adf"][:, 0].tolist() == [0.25, 1.25, 2.25, 3.25]
+

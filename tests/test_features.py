@@ -27,17 +27,19 @@ def test_compute_adf_features_easy_shape_and_diff() -> None:
         {
             "gaze_screen_tf_calibrate_xy_px": [0, 0],
             "target_xy_px": [3, 4],
+            "deviation_px_after_calibrate": 1.5,
         },
         {
             "gaze_screen_tf_calibrate_xy_px": [0, 0],
             "target_xy_px": [6, 8],
+            "deviation_px_after_calibrate": 4.5,
         },
     ]
     adf = compute_adf_features(records, "easy", local_mean_size=2)
     assert adf.shape == (2, 3)
-    np.testing.assert_allclose(adf[:, 0], [5.0, 10.0])
-    np.testing.assert_allclose(adf[:, 1], [0.0, 5.0])
-    np.testing.assert_allclose(adf[:, 2], [5.0, 7.5])
+    np.testing.assert_allclose(adf[:, 0], [1.5, 4.5])
+    np.testing.assert_allclose(adf[:, 1], [0.0, 3.0])
+    np.testing.assert_allclose(adf[:, 2], [1.5, 3.0])
 
 
 def test_average_landmarks_handles_inconsistent_shapes() -> None:
