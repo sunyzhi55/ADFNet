@@ -11,7 +11,7 @@ sys.path.insert(0, str(ROOT / "src"))
 
 from data.dataset import ADFWindowDataset
 from data.io import discover_sequences, filter_sequences_by_task
-from data.split import group_kfold_folds
+from data.split import explicit_folds, group_kfold_folds, test_sequences
 from training.seed import set_seed
 from training.trainer import train_fold
 from utils.config import load_config
@@ -40,6 +40,10 @@ def dataset_kwargs(cfg: dict) -> dict:
     return kwargs
 
 
+def split_cfg(cfg: dict) -> dict:
+    return cfg.get("split", {}) or {}
+
+
 def main() -> None:
     args = parse_args()
     cfg = load_config(args.config)
@@ -54,23 +58,43 @@ def main() -> None:
     task_mode = task_mode_from_args(cfg, args.task_mode)
     sequences = filter_sequences_by_task(discover_sequences(cfg["data"]["root"]), task_mode)
     logger.info("Found %d JSONL sequences for task_mode=%s", len(sequences), task_mode)
-    folds = group_kfold_folds(sequences, n_splits=args.n_splits, seed=cfg["seed"])
+
+    test_subjects = split_cfg(cfg).get("test_subjects", []) or []
+    explicit = split_cfg(cfg).get("explicit_folds")
+    if test_subjects:
+        test_seqs = test_sequences(sequences, test_subjects)
+        logger.info("Test subjects %s held out: %d sequences (evaluate later with evaluate.py --run-dir)",
+                    list(test_subjects), len(test_seqs))
+
+    if explicit:
+        folds = explicit_folds(sequences, explicit, test_subjects)
+        logger.info("Using explicit_folds from config: %d folds", len(folds))
+    else:
+        folds = group_kfold_folds(sequences, n_splits=args.n_splits, seed=cfg["seed"], test_subjects=test_subjects)
+        logger.info("GroupKFold(n_splits=%d) over non-test subjects: %d folds", args.n_splits, len(folds))
+
     if args.max_folds is not None:
         folds = folds[: args.max_folds]
     rows = []
     data_kwargs = dataset_kwargs(cfg)
     for fold in folds:
         train_dataset = ADFWindowDataset(sequences=fold.train, **data_kwargs)
-        test_dataset = ADFWindowDataset(sequences=fold.test, **data_kwargs)
-        logger.info("%s: train windows=%d, test windows=%d", fold.name, len(train_dataset), len(test_dataset))
-        if len(train_dataset) == 0 or len(test_dataset) == 0:
+        val_dataset = ADFWindowDataset(sequences=fold.val, **data_kwargs)
+        logger.info("%s: val_subjects=%s  train windows=%d, val windows=%d",
+                    fold.name, list(fold.val_subjects), len(train_dataset), len(val_dataset))
+        if len(train_dataset) == 0 or len(val_dataset) == 0:
             logger.warning("%s has empty samples, skipped", fold.name)
             continue
-        metrics = train_fold(cfg, train_dataset, test_dataset, f"{fold.name}_{task_mode}")
-        rows.append({"fold": fold.name, "task_mode": task_mode, **metrics})
+        metrics = train_fold(cfg, train_dataset, val_dataset, f"{fold.name}_{task_mode}")
+        rows.append({"fold": fold.name, "val_subjects": ",".join(fold.val_subjects),
+                     "task_mode": task_mode, **metrics})
     output = Path(cfg["training"]["output_dir"]) / f"group_kfold_metrics_{task_mode}.csv"
     save_fold_metrics(rows, output)
     logger.info("GroupKFold metrics saved to %s", output)
+    if test_subjects:
+        logger.info("Test set held out. Run batch evaluation:\n  python scripts/evaluate.py "
+                    "--config %s --run-dir %s --task-mode %s", args.config,
+                    cfg["training"]["output_dir"], task_mode)
 
 
 def save_fold_metrics(rows: list[dict], output: Path) -> None:

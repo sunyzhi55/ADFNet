@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 import torch
 from torch.utils.data import DataLoader
@@ -149,8 +150,24 @@ def build_gamma_reference(train_dataset: ADFWindowDataset, cfg: dict, seed: int)
     )
 
 
-def make_model(cfg: dict) -> ADFNet:
-    return ADFNet(**cfg["model"])
+def make_model(cfg: dict, n_subjects: int | None = None) -> ADFNet:
+    model_cfg = dict(cfg["model"])
+    if n_subjects is not None:
+        model_cfg["n_subjects"] = n_subjects
+    return ADFNet(**model_cfg)
+
+
+def build_subject_mapping(train_dataset: ADFWindowDataset) -> dict[str, int]:
+    """从训练 fold 构造 subject_id -> 整数标签映射（按 id 排序，保证可复现）。"""
+    subjects = sorted({sample.subject_id for sample in train_dataset.samples})
+    return {sid: idx for idx, sid in enumerate(subjects)}
+
+
+def grl_cfg(cfg: dict) -> dict:
+    defaults = {"enabled": True, "max_lambda": 1.0, "warmup_epochs": 0,
+                "loss_weight": 1.0, "schedule_slope": 10.0}
+    defaults.update(cfg.get("grl", {}))
+    return defaults
 
 
 def run_epoch(
@@ -171,14 +188,17 @@ def run_epoch(
     model.train(is_train)
     labels: list[float] = []
     probs: list[float] = []
+    subj_preds: list[int] = []
+    subj_targets: list[int] = []
     total_loss = 0.0
+    total_adv_ce = 0.0
     steps = 0
     pbar = tqdm(loader, desc=f"Epoch {epoch} [{'Train' if is_train else 'Val'}]", leave=False)
     for batch in pbar:
         use_non_blocking = device.type == "cuda"
         adf = batch["adf"].to(device, non_blocking=use_non_blocking)
         y = batch["label"].to(device, non_blocking=use_non_blocking)
-        landmarks = batch["landmarks"].to(device, non_blocking=use_non_blocking)
+        subject_ids = batch["subject_label"].to(device, non_blocking=use_non_blocking)
         dist_stats = batch.get("dist_stats")
         if dist_stats is not None and dist_stats.numel() > 0:
             dist_stats = dist_stats.to(device, non_blocking=use_non_blocking)
@@ -192,7 +212,7 @@ def run_epoch(
                 dist_feature_window=dist_feature_window,
                 grl_lambda=grl_lambda,
             )
-            losses = criterion(outputs, y, landmarks, grl_lambda)
+            losses = criterion(outputs, y, subject_ids)
             if is_train:
                 if not torch.isfinite(losses["loss"]):
                     optimizer.zero_grad(set_to_none=True)
@@ -207,14 +227,28 @@ def run_epoch(
                 current_lr = optimizer.param_groups[0]['lr']
                 pbar.set_postfix({
                     "loss": f"{losses['loss'].item():.4f}",
-                    "LR": f"{current_lr:.6f}"
+                    "adv": f"{float(losses['adv_ce']):.4f}",
+                    "λ": f"{grl_lambda:.3f}",
+                    "LR": f"{current_lr:.6f}",
                 })
         if torch.isfinite(losses["loss"]):
             total_loss += float(losses["loss"].detach().cpu())
+            total_adv_ce += float(losses["adv_ce"].detach().cpu())
             steps += 1
         labels.extend(y.detach().cpu().numpy().reshape(-1).tolist())
         probs.extend(torch.sigmoid(outputs["vigilance_logit"]).detach().cpu().numpy().reshape(-1).tolist())
+        sid_arr = subject_ids.detach().cpu().numpy().reshape(-1)
+        valid = sid_arr >= 0
+        if valid.any():
+            pred = outputs["subject_logit"].argmax(dim=-1).detach().cpu().numpy().reshape(-1)
+            subj_preds.extend(pred[valid].tolist())
+            subj_targets.extend(sid_arr[valid].tolist())
     metrics = binary_metrics(labels, probs, threshold)
+    metrics["adv_ce"] = total_adv_ce / max(steps, 1)
+    metrics["subject_acc"] = (
+        float((np.asarray(subj_preds) == np.asarray(subj_targets)).mean())
+        if subj_preds else float("nan")
+    )
     return metrics, total_loss / max(steps, 1)
 
 
@@ -238,8 +272,15 @@ def train_fold(
         dist_stats_mean,
         dist_stats_std,
     )
-    model = make_model(cfg).to(device)
-    criterion = ADFNetLoss()
+    # GRL 对抗目标：从训练 fold 构造 subject_id->int 映射。验证/留出被试映射不到，
+    # 保持 -1，由损失里的 ignore_index 忽略，绝不混入对抗。
+    subject_mapping = build_subject_mapping(train_dataset)
+    train_dataset.attach_subject_labels(subject_mapping)
+    val_dataset.attach_subject_labels(subject_mapping)
+    cfg["model"]["n_subjects"] = len(subject_mapping)
+    grl = grl_cfg(cfg)
+    model = make_model(cfg, n_subjects=len(subject_mapping)).to(device)
+    criterion = ADFNetLoss(loss_weight=grl["loss_weight"])
     optimizer = get_optimizer(
         cfg["training"]["optimizer_name"],
         model.parameters(),
@@ -270,7 +311,16 @@ def train_fold(
     early_stopping = EarlyStopping(**cfg["training"].get("early_stopping", {}))
     best_epoch = BestEpochTracker(**result_selection_from_config(cfg))
     for epoch in range(cfg["training"]["epochs"]):
-        lambd = grl_lambda_schedule(epoch, cfg["training"]["epochs"])
+        if grl["enabled"]:
+            lambd = grl_lambda_schedule(
+                epoch,
+                cfg["training"]["epochs"],
+                max_lambda=grl["max_lambda"],
+                warmup_epochs=grl["warmup_epochs"],
+                slope=grl["schedule_slope"],
+            )
+        else:
+            lambd = 0.0
         train_metrics, train_loss = run_epoch(
             epoch,
             model,
@@ -332,6 +382,7 @@ def train_fold(
                         "mean": dist_stats_mean,
                         "std": dist_stats_std,
                     },
+                    "subject_mapping": subject_mapping,
                 },
                 output_dir / "best.pt",
             )

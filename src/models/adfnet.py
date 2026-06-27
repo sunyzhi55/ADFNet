@@ -5,7 +5,7 @@ from torch import nn
 
 from models.distribution import DistributionBranch, GammaReference
 from models.grl import GradientReverseLayer
-from models.heads import LandmarkHead, VigilanceHead
+from models.heads import SubjectDiscriminator, VigilanceHead
 from models.mamba_encoder import MambaTemporalEncoder
 
 
@@ -19,7 +19,7 @@ class ADFNet(nn.Module):
         mamba_dim: int = 128,
         mamba_layers: int = 2,
         fusion_dim: int = 144,
-        landmark_dim: int = 70,
+        n_subjects: int = 20,
         dropout: float = 0.2,
     ) -> None:
         super().__init__()
@@ -38,8 +38,10 @@ class ADFNet(nn.Module):
             dropout=dropout,
         )
         self.grl = GradientReverseLayer()
+        # 主任务头直接接在干净的融合特征上；对抗判别器接在 GRL 之后的特征上，
+        # 反向时 GRL 把判别器梯度取负传回编码器，逼编码器剥离身份信息。
         self.vigilance_head = VigilanceHead(fusion_dim, dropout)
-        self.landmark_head = LandmarkHead(fusion_dim, landmark_dim, dropout)
+        self.subject_discriminator = SubjectDiscriminator(fusion_dim, n_subjects, dropout)
 
     def forward(
         self,
@@ -58,10 +60,10 @@ class ADFNet(nn.Module):
         fusion_feature = torch.cat([temp_feature, dist_feature], dim=-1)
         vigilance_logit = self.vigilance_head(fusion_feature)
         adv_feature = self.grl(fusion_feature, grl_lambda)
-        landmark_pred = self.landmark_head(adv_feature)
+        subject_logit = self.subject_discriminator(adv_feature)
         return {
             "vigilance_logit": vigilance_logit,
-            "landmark_pred": landmark_pred,
+            "subject_logit": subject_logit,
             "fusion_feature": fusion_feature,
             "dist_feature": dist_feature,
             "temp_feature": temp_feature,

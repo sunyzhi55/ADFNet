@@ -61,7 +61,7 @@ def main() -> None:
     folds = group_kfold_folds(sequences, n_splits=2, seed=cfg["seed"])
     fold = folds[0]
     train_dataset = ADFWindowDataset(sequences=fold.train, **data_kwargs)
-    val_dataset = ADFWindowDataset(sequences=fold.test, **data_kwargs)
+    val_dataset = ADFWindowDataset(sequences=fold.val, **data_kwargs)
     logger.info("Training fold=%s, train=%d, val=%d", fold.name, len(train_dataset), len(val_dataset))
     metrics = train_fold(cfg, train_dataset, val_dataset, f"{fold.name}_{task_mode}")
     logger.info("Training finished: %s", metrics)

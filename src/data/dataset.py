@@ -21,6 +21,7 @@ class WindowSample:
     task_type: str
     path: Path
     dist_stats: np.ndarray | None = None
+    subject_label: int = -1  # GRL 对抗目标：train fold 内 subject_id->int，未知被试保持 -1
 
 
 class ADFWindowDataset(Dataset):
@@ -83,6 +84,7 @@ class ADFWindowDataset(Dataset):
             "landmarks": torch.from_numpy(sample.landmarks),
             "dist_stats": torch.from_numpy(sample.dist_stats) if sample.dist_stats is not None else torch.empty(0),
             "subject_id": sample.subject_id,
+            "subject_label": torch.tensor([sample.subject_label], dtype=torch.long),
             "task_type": sample.task_type,
         }
 
@@ -118,6 +120,26 @@ class ADFWindowDataset(Dataset):
             for idx, sample in enumerate(self.samples)
         ]
         return stats_mean.astype(np.float32), stats_std.astype(np.float32)
+
+    def attach_subject_labels(self, mapping: dict[str, int]) -> None:
+        """按 train fold 的 subject_id->int 映射，给每个窗口打上身份标签。
+
+        未知被试（验证集/留出被试）映射不到则保持 -1，由损失里的
+        CrossEntropyLoss(ignore_index=-1) 忽略，不参与对抗。
+        """
+        self.samples = [
+            WindowSample(
+                adf=sample.adf,
+                label=sample.label,
+                landmarks=sample.landmarks,
+                subject_id=sample.subject_id,
+                task_type=sample.task_type,
+                path=sample.path,
+                dist_stats=sample.dist_stats,
+                subject_label=int(mapping.get(sample.subject_id, -1)),
+            )
+            for sample in self.samples
+        ]
 
 
 def collect_alert_distances(dataset: ADFWindowDataset) -> np.ndarray:

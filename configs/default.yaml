@@ -2,13 +2,22 @@ exp_name: "ADFNet_Exp"
 seed: 42
 
 data:
-  root: "/data3/wangchangmiao/shenxy/Code/gaze/CalibratedData"
+  root: "/data3/wangchangmiao/shenxy/Code/gaze/FatigueGuardData/Data0620_tf_calibrate"
   task_mode: "easy"
   window_size: 256
   stride: 64
   local_mean_size: 16
   landmark_dim: 10
   min_confidence: null
+
+# 数据划分：把「验证集（选轮用）」与「测试集（最终报告用）」分开。
+# test_subjects 中的被试在训练时被整体 hold-out，不进入任何 fold 的 train/val，
+# 训练结束后用 `python scripts/evaluate.py --run-dir <训练输出目录>` 批量评估。
+# 留空（[]）表示不设独立测试集，LOSO/GroupKFold 在全部被试上进行。
+split:
+  test_subjects: []        # 例: ["19", "20"]；id 需与文件名前缀一致（字符串）
+  explicit_folds: [["01","05", "14", "19"], ["02","06", "10", "15"], ["07","11", "16", "20"], ["03","08", "12", "17"], ["04","09", "13", "18"]]     # 可选：显式指定每 fold 的 val 被试 id 列表，保证跨实验完全一致
+                           # 形如 [["01","02"], ["03"], ...]；null 时按 LOSO/GroupKFold 自动生成
 
 distribution:
   feature_window: 256
@@ -25,15 +34,24 @@ model:
   mamba_dim: 128
   mamba_layers: 2
   fusion_dim: 192
-  landmark_dim: 10
+  n_subjects: 20  # 占位值，运行时由 train_fold 按当前 fold 的训练被试数覆盖
   dropout: 0.2
+
+# GRL 对抗解耦：对抗目标为 subject_id 分类（交叉熵 + GRL），
+# 替代原先的面部关键点回归（面部特征携带疲劳标签，会泄漏）。
+grl:
+  enabled: true
+  max_lambda: 1.0       # λ 上限；若特征仍被洗可降到 0.1~0.3
+  warmup_epochs: 0     # 前若干轮 λ=0，先让主任务特征稳定
+  loss_weight: 1.0     # 对抗 CE 在总损失里的常数权重（与 λ 解耦）
+  schedule_slope: 10.0 # sigmoid 斜率，越小越平缓
 
 training:
   epochs: 1000
   batch_size: 128
   optimizer_name: "AdamW"
   lr: 1.0e-3
-  weight_decay: 1.0e-4
+  weight_decay: 5.0e-4
   momentum: 0.9
   lr_policy: "onecycle" # options: null, lambda, step, plateau, exp, cosine, onecycle
   cos_T0: 20
