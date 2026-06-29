@@ -14,7 +14,7 @@ from data.io import discover_sequences, filter_sequences_by_task
 from data.split import explicit_folds, group_kfold_folds, test_sequences
 from training.seed import set_seed
 from training.trainer import train_fold
-from utils.config import load_config
+from utils.config import load_config, save_hparams
 from utils.logging import setup_logger
 from datetime import datetime
 import time
@@ -75,6 +75,24 @@ def main() -> None:
 
     if args.max_folds is not None:
         folds = folds[: args.max_folds]
+    total_subjects = len({seq.subject_id for seq in sequences})
+    save_hparams(
+        cfg,
+        cfg["training"]["output_dir"],
+        script="run_group_kfold.py",
+        task_mode=task_mode,
+        timestamp=timestamp,
+        extra={
+            "total_subjects": total_subjects,
+            "n_folds": len(folds),
+            "n_splits": args.n_splits,
+            "max_folds": args.max_folds,
+            "test_subjects": list(test_subjects),
+            "explicit_folds": explicit,
+            "val_subjects_per_fold": [list(f.val_subjects) for f in folds],
+        },
+    )
+    logger.info("Hyperparameters saved to %s", Path(cfg["training"]["output_dir"]) / "hparams.json")
     rows = []
     data_kwargs = dataset_kwargs(cfg)
     for fold in folds:

@@ -14,7 +14,7 @@ from data.io import discover_sequences, filter_sequences_by_task
 from data.split import loso_folds
 from training.seed import set_seed
 from training.trainer import train_fold
-from utils.config import load_config
+from utils.config import load_config, save_hparams
 from utils.logging import setup_logger
 from datetime import datetime
 import time
@@ -56,17 +56,33 @@ def main() -> None:
     folds = loso_folds(sequences)
     if args.max_folds is not None:
         folds = folds[: args.max_folds]
+    total_subjects = len({seq.subject_id for seq in sequences})
+    save_hparams(
+        cfg,
+        cfg["training"]["output_dir"],
+        script="run_loso.py",
+        task_mode=task_mode,
+        timestamp=timestamp,
+        extra={
+            "total_subjects": total_subjects,
+            "n_folds": len(folds),
+            "max_folds": args.max_folds,
+            "val_subjects_per_fold": [list(f.val_subjects) for f in folds],
+        },
+    )
+    logger.info("Hyperparameters saved to %s", Path(cfg["training"]["output_dir"]) / "hparams.json")
     rows = []
     data_kwargs = dataset_kwargs(cfg)
     for fold in folds:
         train_dataset = ADFWindowDataset(sequences=fold.train, **data_kwargs)
-        test_dataset = ADFWindowDataset(sequences=fold.test, **data_kwargs)
-        logger.info("%s: train windows=%d, test windows=%d", fold.name, len(train_dataset), len(test_dataset))
-        if len(train_dataset) == 0 or len(test_dataset) == 0:
+        val_dataset = ADFWindowDataset(sequences=fold.val, **data_kwargs)
+        logger.info("%s: train windows=%d, val windows=%d", fold.name, len(train_dataset), len(val_dataset))
+        if len(train_dataset) == 0 or len(val_dataset) == 0:
             logger.warning("%s has empty samples, skipped", fold.name)
             continue
-        metrics = train_fold(cfg, train_dataset, test_dataset, f"{fold.name}_{task_mode}")
-        rows.append({"fold": fold.name, "task_mode": task_mode, **metrics})
+        metrics = train_fold(cfg, train_dataset, val_dataset, f"{fold.name}_{task_mode}")
+        rows.append({"fold": fold.name, "val_subjects": ",".join(fold.val_subjects),
+                     "task_mode": task_mode, **metrics})
     output = Path(cfg["training"]["output_dir"]) / f"loso_metrics_{task_mode}.csv"
     save_fold_metrics(rows, output)
     logger.info("LOSO metrics saved to %s", output)

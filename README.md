@@ -141,6 +141,22 @@ outputs/group_kfold_metrics_<task_mode>.csv
 
 这些汇总 CSV 中每个 fold 的行来自 `final_metrics.csv` 对应的最佳 epoch，而不是最后一个 epoch。
 
+## 超参数记录
+
+每次训练（LOSO / GroupKFold / 单 fold 调试）都会在运行输出目录写一份 `hparams.json`，集中记录本次实验用到的全部超参数，便于后期对比与消融实验溯源：
+
+```text
+outputs/<timestamp>_<exp_name>_<loso|groupkfold>/hparams.json
+```
+
+内容包括：
+
+- 运行元信息：`script`、`task_mode`、`timestamp`、`seed`、`exp_name`、`git_commit`、`python`。
+- 运行级划分信息：`total_subjects`、`n_folds`、`max_folds`，GroupKFold 另含 `n_splits`/`test_subjects`/`explicit_folds`，以及 `val_subjects_per_fold`（每 fold 的验证被试 id，保证跨实验一致性可核对）。
+- `config`：完整的有效配置（含运行时已生效的 `output_dir`、`model`、`grl`、`training`、`split`、`data` 等），即本次训练真正使用的所有超参数。
+
+在 fold 训练循环开始前写入，即使后续训练中断，超参数也已落盘。
+
 ## 指标字段
 
 基础指标：

@@ -12,7 +12,7 @@ from data.io import discover_sequences, filter_sequences_by_task
 from data.split import group_kfold_folds
 from training.seed import set_seed
 from training.trainer import train_fold
-from utils.config import load_config
+from utils.config import load_config, save_hparams
 from utils.logging import setup_logger
 from datetime import datetime
 import time
@@ -53,6 +53,15 @@ def main() -> None:
     if not sequences:
         logger.warning("No data found. Check data.root and task_mode.")
         return
+    save_hparams(
+        cfg,
+        cfg["training"]["output_dir"],
+        script="train.py",
+        task_mode=task_mode,
+        timestamp=timestamp,
+        extra={"dry_run": args.dry_run},
+    )
+    logger.info("Hyperparameters saved to %s", Path(cfg["training"]["output_dir"]) / "hparams.json")
     data_kwargs = dataset_kwargs(cfg)
     if args.dry_run:
         dataset = ADFWindowDataset(sequences=sequences, **data_kwargs)

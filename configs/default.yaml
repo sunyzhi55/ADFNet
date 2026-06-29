@@ -2,7 +2,7 @@ exp_name: "ADFNet_Exp"
 seed: 42
 
 data:
-  root: "/data3/wangchangmiao/shenxy/Code/gaze/FatigueGuardData/Data0620_tf_calibrate"
+  root: "/data3/wangchangmiao/shenxy/Code/gaze/FatigueGuardData/Datapreprocess_l2cs/Data0620_tf_calibrate"
   task_mode: "easy"
   window_size: 256
   stride: 64
