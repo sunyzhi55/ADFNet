@@ -1,66 +1,107 @@
 # ADFNet：任务完成驱动的跨受试者疲劳检测框架
 
-ADFNet 基于 TF-GAM 与当前目录中的网络架构流程实现。模型将疲劳/专注状态建模为视线动态与任务目标轨迹之间的耦合质量，并通过 Gamma 分布偏移、Mamba 时序编码和 GRL 对抗解耦提升跨受试者泛化能力。
+ADFNet 基于 TF-GAM 与网络架构流程实现。模型将疲劳/专注状态建模为视线动态与任务目标轨迹之间的耦合质量，并通过 **Gamma 分布偏移**、**Mamba-MLA 时序编码**和 **GRL 对抗解耦**提升跨受试者泛化能力。
 
-## 核心功能
+## 项目结构
 
-- ADF 三通道特征：空间漂移、一阶差分、局部滑动均值。
-- 任务模式过滤：支持 `easy`、`hard`、`all` 三种训练/评估模式。
-- Gamma 清醒基准分布：只使用当前训练 fold 的 alert 样本拟合，避免测试主体泄露。
-- 分布偏移分支：Mean Log-Likelihood、Wasserstein 距离、soft-DTW 距离。
-- 真实 `mamba-ssm` 时序分支。
-- GRL 对抗解耦：以 subject_id 分类为对抗目标（交叉熵 + GRL），剥离个人身份/注视习惯噪声，而非面部关键点回归（面部特征会泄漏疲劳标签）。
-- LOSO 与 GroupKFold 按 subject 物理隔离。
-- 早停、最佳轮选择、checkpoint 评估和 CSV 导出。
-
-## 任务模式
-
-在 [configs/default.yaml](configs/default.yaml) 中设置：
-
-```yaml
-data:
-  task_mode: "easy"  # all / easy / hard
+```
+ADFNet/
+├── configs/
+│   └── default.yaml              # 唯一配置文件（含 ablation 段）
+├── scripts/
+│   ├── train.py                  # 单 fold 调试
+│   ├── run_loso.py               # LOSO 交叉验证
+│   ├── run_group_kfold.py        # GroupKFold 交叉验证
+│   ├── run_ablation.py           # 消融实验启动器（64 组合 + LSTM/Transformer 替换）
+│   ├── evaluate.py               # checkpoint 评估（单模型/批量）
+│   ├── check_session_confound.py # 诊断：session 混淆检查
+│   ├── diagnose_grl_trajectory.py# 诊断：GRL 训练轨迹分析
+│   └── visualize_face_features.py# 诊断：面部特征编码可视化
+├── src/
+│   ├── data/
+│   │   ├── dataset.py            # ADFWindowDataset, WindowSample
+│   │   ├── features.py           # compute_adf_features, sliding_mean
+│   │   ├── io.py                 # SequenceInfo, discover_sequences
+│   │   └── split.py              # SubjectFold, loso_folds, group_kfold_folds
+│   ├── models/
+│   │   ├── adfnet.py             # ADFNet 主模型（支持 ablation 配置）
+│   │   ├── distribution.py       # GammaReference, DistributionBranch, soft-DTW
+│   │   ├── grl.py                # GradientReverseLayer
+│   │   ├── heads.py              # VigilanceHead, SubjectDiscriminator
+│   │   └── mamba_encoder.py      # Mamba / LSTM / Transformer 时序编码器
+│   ├── training/
+│   │   ├── losses.py             # ADFNetLoss, grl_lambda_schedule
+│   │   ├── metrics.py            # binary_metrics
+│   │   ├── seed.py               # set_seed
+│   │   └── trainer.py            # train_fold, evaluate_checkpoint
+│   └── utils/
+│       ├── basic.py              # get_optimizer, get_scheduler
+│       ├── config.py             # load_config, save_hparams
+│       └── logging.py            # setup_logger
+├── tests/
+│   ├── test_ablation.py          # 消融配置测试（22 项）
+│   ├── test_dataset.py
+│   ├── test_features.py
+│   ├── test_metrics.py
+│   └── test_model_forward.py
+└── requirements.txt
 ```
 
-也可以用命令行覆盖：
+## 模型架构
+
+```
+                          ┌─────────────────────┐
+  ADF 序列 [B,T,3] ──────▶│  Mamba-MLA 时序编码器 │──▶ temp_feature [B, mamba_dim]
+  (drift, diff, mean)     │  (或 LSTM/Transformer)│
+                          └─────────────────────┘
+                                                        ┌──────────┐
+                          ┌─────────────────────┐       │          │   ┌───────────────┐
+  dist_stats [B,3] ──────▶│   分布偏移分支       │──▶ dist_feature  │ concat │──▶ fusion_feature
+  (log-lik, wass, sdtw)   │  (Gamma 参考 + MLP)  │   [B, dist_dim]  │        │   [B, fusion_dim]
+                          └─────────────────────┘       └──────────┘   └───────┬───────┘
+                                                                               │
+                                                              ┌────────────────┼────────────────┐
+                                                              ▼                │                ▼
+                                                     VigilanceHead             │         GRL → SubjectDiscriminator
+                                                     (疲劳二分类)              │         (身份对抗, 梯度反转)
+                                                              │                │                │
+                                                              ▼                │                ▼
+                                                       vigilance_logit         │         subject_logit
+```
+
+双分支融合后经主任务头输出疲劳预测；GRL 对抗头从融合特征中剥离身份信息（subject_id），迫使编码器学习跨被试通用的疲劳表征。
+
+## 核心组件
+
+- **ADF 三通道特征**：空间漂移（gaze-target 距离）、一阶差分（变化率）、局部滑动均值（趋势平滑）。
+- **Gamma 清醒基准分布**：仅使用当前训练 fold 的 alert 样本拟合 Gamma 分布，计算 Mean Log-Likelihood、Wasserstein 距离、Soft-DTW 距离作为分布偏移特征，避免测试主体泄露。
+- **Mamba-MLA 时序编码器**：基于 `mamba-ssm` 的选择性状态空间模型，带残差连接和 LayerNorm，mean pooling 输出。
+- **GRL 对抗解耦**：以 subject_id 分类为对抗目标（交叉熵 + GRL），剥离个人身份/注视习惯噪声。身份标签与疲劳标签正交（每被试 alert/sleep 各半），对抗擦除不会系统性擦除疲劳信号。
+- **任务模式过滤**：支持 `easy`、`hard`、`all` 三种训练/评估模式。
+- **LOSO 与 GroupKFold**：按 subject 物理隔离的交叉验证策略。
+
+## 快速开始
+
+### 环境安装
+
+```bash
+pip install -r requirements.txt
+pip install mamba-ssm  # 需要 CUDA 环境
+```
+
+### 训练
+
+LOSO 交叉验证：
 
 ```bash
 python scripts/run_loso.py --config configs/default.yaml --task-mode easy
 python scripts/run_loso.py --config configs/default.yaml --task-mode hard
-python scripts/run_loso.py --config configs/default.yaml --task-mode all
 ```
 
-所有入口都支持 `--task-mode`：`train.py`、`run_loso.py`、`run_group_kfold.py`、`evaluate.py`。
-
-## 数据划分：验证集与测试集
-
-为保证跨实验（对比/消融）的 fold 完全一致，并把「选轮用的验证集」与「最终报告用的测试集」严格分开，在 [configs/default.yaml](configs/default.yaml) 的 `split` 段配置：
-
-```yaml
-split:
-  test_subjects: ["19", "20"]   # 被整体 hold-out 的测试被试 id；[] 表示不设独立测试集
-  explicit_folds: [["01","05", "14", "19"], ["02","06", "10", "15"], ["07","11", "16", "20"], ["03","08", "12","17"], ["04","09", "13", "18"]]          # 可选：显式指定每 fold 的 val 被试，保证跨实验一致
-```
-
-- **`test_subjects`**：其中的被试在训练时被整体 hold-out，不进入任何 fold 的 train/val。训练结束后用 `evaluate.py --run-dir` 在这些被试上做最终评估。留空 `[]` 则不设独立测试集，LOSO/GroupKFold 在全部被试上进行（此时每个 fold 的 val 即作为评估集）。
-- **`explicit_folds`**：形如 `[["01","02"], ["03"], ...]`，每个子列表是该 fold 的 val 被试；其余非测试被试作为该 fold 的 train。设为 `null` 时按 LOSO/GroupKFold 自动生成。显式指定可保证不同实验跑的是同一套 fold。
-
-被试 id 必须与数据文件名前缀一致（字符串，如 `"01"`～`"20"`）。
-
-## 训练
-
-检查数据：
+GroupKFold 交叉验证：
 
 ```bash
-python scripts/train.py --config configs/default.yaml --dry-run --task-mode easy
-```
-
-LOSO：
-
-```bash
-python scripts/run_loso.py --config configs/default.yaml --task-mode easy
-python scripts/run_loso.py --config configs/default.yaml --task-mode hard
-python scripts/run_loso.py --config configs/default.yaml --task-mode all
+python scripts/run_group_kfold.py --config configs/default.yaml --n-splits 5 --task-mode easy
 ```
 
 调试单个 fold：
@@ -69,147 +110,21 @@ python scripts/run_loso.py --config configs/default.yaml --task-mode all
 python scripts/run_loso.py --config configs/default.yaml --task-mode all --max-folds 1
 ```
 
-GroupKFold：
+所有入口都支持 `--task-mode`：`train.py`、`run_loso.py`、`run_group_kfold.py`、`evaluate.py`。
 
-```bash
-python scripts/run_group_kfold.py --config configs/default.yaml --n-splits 5 --task-mode easy
-```
+### 评估
 
-## 最佳轮选择
-
-训练过程会完整写入每个 fold 的 `history.csv`。训练结束后，代码不会再使用 `history[-1]` 作为最终结果，而是按照配置中的 `training.result_selection` 从所有 epoch 中选出最佳一轮，并写入：
-
-```text
-outputs/<fold>_<task_mode>/final_metrics.csv
-```
-
-默认配置：
-
-```yaml
-training:
-  result_selection:
-    monitor: "val_f1"
-    mode: "max"
-    min_delta: 0.0
-```
-
-含义：
-
-- `monitor`：用于选择最终最佳轮的字段，例如 `val_f1`、`val_auc`、`val_acc`、`val_loss`。
-- `mode`：`max` 表示越大越好，`min` 表示越小越好。
-- `min_delta`：只有超过该变化量才认为是更好的结果。
-
-`best.pt` 也按 `result_selection` 保存，保证模型权重和最终 CSV 是同一轮结果。
-
-## 早停策略
-
-早停配置仍然独立存在：
-
-```yaml
-training:
-  early_stopping:
-    enabled: true
-    monitor: "val_f1"
-    mode: "max"
-    patience: 1000
-    min_delta: 1.0e-4
-```
-
-如果没有配置 `training.result_selection`，代码会默认沿用 `early_stopping.monitor` 和 `early_stopping.mode` 作为最佳轮选择标准。
-
-## CSV 输出
-
-每个 fold：
-
-```text
-outputs/<fold>_<task_mode>/history.csv
-outputs/<fold>_<task_mode>/final_metrics.csv
-outputs/<fold>_<task_mode>/best.pt
-```
-
-LOSO 汇总：
-
-```text
-outputs/loso_metrics_<task_mode>.csv
-```
-
-GroupKFold 汇总：
-
-```text
-outputs/group_kfold_metrics_<task_mode>.csv
-```
-
-这些汇总 CSV 中每个 fold 的行来自 `final_metrics.csv` 对应的最佳 epoch，而不是最后一个 epoch。
-
-## 超参数记录
-
-每次训练（LOSO / GroupKFold / 单 fold 调试）都会在运行输出目录写一份 `hparams.json`，集中记录本次实验用到的全部超参数，便于后期对比与消融实验溯源：
-
-```text
-outputs/<timestamp>_<exp_name>_<loso|groupkfold>/hparams.json
-```
-
-内容包括：
-
-- 运行元信息：`script`、`task_mode`、`timestamp`、`seed`、`exp_name`、`git_commit`、`python`。
-- 运行级划分信息：`total_subjects`、`n_folds`、`max_folds`，GroupKFold 另含 `n_splits`/`test_subjects`/`explicit_folds`，以及 `val_subjects_per_fold`（每 fold 的验证被试 id，保证跨实验一致性可核对）。
-- `config`：完整的有效配置（含运行时已生效的 `output_dir`、`model`、`grl`、`training`、`split`、`data` 等），即本次训练真正使用的所有超参数。
-
-在 fold 训练循环开始前写入，即使后续训练中断，超参数也已落盘。
-
-## 指标字段
-
-基础指标：
-
-```text
-auc, acc, f1, precision, recall
-```
-
-混淆矩阵被拆成稳定数值列：
-
-```text
-cm_tn, cm_fp, cm_fn, cm_tp
-```
-
-训练过程中的字段包含：
-
-```text
-train_auc, train_acc, train_f1, train_precision, train_recall
-train_cm_tn, train_cm_fp, train_cm_fn, train_cm_tp
-val_auc, val_acc, val_f1, val_precision, val_recall
-val_cm_tn, val_cm_fp, val_cm_fn, val_cm_tp
-```
-
-`final_metrics.csv` 额外包含：
-
-```text
-best_epoch, selection_monitor, selection_mode, selection_value
-```
-
-## 独立评估
-
-### 单模型评估
-
-读取已训练好的单个 checkpoint，在指定数据上评估并导出 CSV：
+单模型评估：
 
 ```bash
 python scripts/evaluate.py \
   --config configs/default.yaml \
   --checkpoint outputs/loso_01_easy/best.pt \
   --data-root /path/to/test_jsonl \
-  --task-mode easy \
-  --output-csv outputs/eval_external_easy.csv
+  --task-mode easy
 ```
 
-如果不传 `--data-root`，默认使用配置文件中的 `data.root`。如果不传 `--output-csv`，默认写入：
-
-```text
-outputs/eval_metrics_<task_mode>.csv
-```
-
-### 批量测试集评估（推荐）
-
-训练时若在 `split.test_subjects` 中指定了 hold-out 测试被试，训练结束后用 `--run-dir` 指向训练输出目录，`evaluate.py` 会读取该目录下每个 fold 子目录的 `best.pt`，在测试集上逐 fold 评估并汇总：
+批量测试集评估（推荐）：
 
 ```bash
 python scripts/evaluate.py \
@@ -218,13 +133,323 @@ python scripts/evaluate.py \
   --task-mode hard
 ```
 
-- 测试集只构建一次；每个 fold 用各自 checkpoint 里保存的 Gamma 参考分布与归一化参数对测试集重新做分布特征对齐，保证与训练时一致。
-- 输出默认写到 `<run-dir>/test_metrics_<task_mode>.csv`，含每个 fold 一行以及末尾 `mean`/`std` 汇总行。
-- 批量模式要求配置 `split.test_subjects` 非空；否则报错（此时应改用单模型 `--checkpoint` 模式）。
+## 消融实验
 
-## 加速相关
+`scripts/run_ablation.py` 提供统一的消融实验入口，以 `configs/default.yaml` 为基线，系统性地禁用/替换各组件来衡量其贡献。
 
-当前实现会在每个 fold 开始前预计算分布统计特征，避免每个 batch 重复计算 soft-DTW。可调参数：
+### 消融维度
+
+6 个二值开关（2^6 = 64 种组合）：
+
+| 开关 | 组件 | 禁用方式 |
+|------|------|----------|
+| `enable_gamma` | Gamma 分布对齐流 | 移除 DistributionBranch + GammaReference |
+| `enable_grl` | GRL 对抗解耦 | 移除梯度反转层 + 身份判别器 |
+| `enable_diff` | 一阶差分通道 | ADF channel 1 置零 |
+| `enable_sliding_mean` | 滑动均值通道 | ADF channel 2 置零 |
+| `enable_soft_dtw` | Soft-DTW 距离 | 分布特征维度 3 → 2 |
+| `enable_mamba` | Mamba-MLA 时序编码器 | 移除整个时序分支 |
+
+2 种时序编码器替换实验（独立运行，不参与组合遍历）：
+
+| 替换 | 说明 |
+|------|------|
+| `temporal_encoder: lstm` | 用双向 LSTM 替换 Mamba-MLA |
+| `temporal_encoder: transformer` | 用 Transformer（含正弦位置编码）替换 Mamba-MLA |
+
+2 种分布拟合替换实验（独立运行，不参与组合遍历）：
+
+| 替换 | 说明 |
+|------|------|
+| `reference_distribution: gaussian` | 用高斯分布替换 Gamma 分布（对称分布假设对比） |
+| `reference_distribution: kde` | 用核密度估计替换 Gamma 分布（非参数方法对比） |
+
+### 配置
+
+在 `configs/default.yaml` 中的 `ablation` 段控制，所有开关默认 `true`（完整模型）：
+
+```yaml
+ablation:
+  enable_gamma: true
+  enable_grl: true
+  enable_diff: true
+  enable_sliding_mean: true
+  enable_soft_dtw: true
+  enable_mamba: true
+  temporal_encoder: "mamba"           # mamba | lstm | transformer
+  reference_distribution: "gamma"     # gamma | gaussian | kde
+```
+
+### 用法
+
+```bash
+# 完整模型基线（kfold + loso, easy + hard）
+python scripts/run_ablation.py --preset full
+
+# 单个消融
+python scripts/run_ablation.py --preset no_gamma
+python scripts/run_ablation.py --preset no_grl
+python scripts/run_ablation.py --preset no_diff
+python scripts/run_ablation.py --preset no_sliding_mean
+python scripts/run_ablation.py --preset no_soft_dtw
+python scripts/run_ablation.py --preset no_mamba
+
+# 全部 64 种组合
+python scripts/run_ablation.py --preset all_combinations
+
+# LSTM / Transformer 替换
+python scripts/run_ablation.py --preset lstm
+python scripts/run_ablation.py --preset transformer
+
+# Gaussian / KDE 分布替换
+python scripts/run_ablation.py --preset gaussian
+python scripts/run_ablation.py --preset kde
+
+# 仅 kfold + easy（加速调试）
+python scripts/run_ablation.py --preset no_grl --cv kfold --task-mode easy
+
+# 指定 GPU
+python scripts/run_ablation.py --preset all_combinations --device cuda:1
+
+# 调试：每种配置只跑 1 个 fold
+python scripts/run_ablation.py --preset all_combinations --max-folds 1
+```
+
+### 命令行参数
+
+| 参数 | 默认值 | 说明 |
+|------|--------|------|
+| `--preset` | `full` | 消融预设：`full`, `no_gamma`, `no_grl`, `no_diff`, `no_sliding_mean`, `no_soft_dtw`, `no_mamba`, `all_combinations`, `lstm`, `transformer` |
+| `--cv` | `both` | 交叉验证：`kfold`, `loso`, `both` |
+| `--task-mode` | `easy hard` | 任务难度，可多选 |
+| `--config` | `configs/default.yaml` | 基线配置文件 |
+| `--output-base` | `./outputs/ablation` | 消融输出根目录 |
+| `--n-splits` | `5` | GroupKFold 折数 |
+| `--max-folds` | `None` | 每种 CV 最多跑几个 fold（调试用） |
+| `--device` | `None` | 覆盖 `training.device` |
+
+### 输出结构
+
+```
+outputs/ablation/
+├── {timestamp}_full/
+│   ├── kfold_easy/
+│   │   ├── fold_01_easy/history.csv
+│   │   ├── fold_01_easy/final_metrics.csv
+│   │   ├── fold_01_easy/best.pt
+│   │   └── group_kfold_metrics_easy.csv
+│   ├── kfold_hard/ ...
+│   ├── loso_easy/ ...
+│   └── loso_hard/ ...
+├── {timestamp}_no_gamma/ ...
+├── {timestamp}_no_grl/ ...
+├── {timestamp}_lstm/ ...
+└── {timestamp}_ablation_summary.csv   # 全部结果汇总
+```
+
+每个消融实验的 `hparams.json` 中额外记录 `ablation_label`、`ablation_overrides` 和 `preset` 字段，便于溯源。
+
+### 批量并行运行（推荐）
+
+`run_ablation.py` 是串行的（前一个跑完后一个才开始）。在服务器上推荐使用 `scripts/run_all_ablations.sh` 将所有实验以 `nohup` 并行提交到多张 GPU：
+
+```bash
+# 全部实验（64 组合 + LSTM/Transformer 替换），自动分配所有 GPU
+bash scripts/run_all_ablations.sh all
+
+# 指定 GPU 和并行度
+bash scripts/run_all_ablations.sh all --gpus "0 1 2 3" --max-parallel 2
+
+# 仅 64 种组合
+bash scripts/run_all_ablations.sh combinations
+
+# 仅 LSTM 替换的 32 种组合
+bash scripts/run_all_ablations.sh lstm
+
+# 仅 Transformer 替换的 32 种组合
+bash scripts/run_all_ablations.sh transformer
+
+# 仅 Gaussian 替换的 32 种组合
+bash scripts/run_all_ablations.sh gaussian
+
+# 仅 KDE 替换的 32 种组合
+bash scripts/run_all_ablations.sh kde
+
+# 单个预设
+bash scripts/run_all_ablations.sh single no_grl
+bash scripts/run_all_ablations.sh single full
+
+# 冒烟测试：每种配置只跑 1 个 fold，仅 kfold + easy
+bash scripts/run_all_ablations.sh all --max-folds 1 --cv kfold --task easy
+
+# 查看运行状态
+bash scripts/run_all_ablations.sh status
+```
+
+脚本特性：
+
+- GPU 自动检测与 round-robin 分配，也可通过 `--gpus "0 1"` 手动指定。
+- 每张 GPU 默认最多 2 个并行进程（`--max-parallel` 可调），超出自动排队等待。
+- 每个实验独立日志文件在 `outputs/ablation/logs/` 下。
+- `status` 命令实时显示每个 job 的完成/运行/失败状态。
+
+输出目录结构：
+
+```
+outputs/ablation/
+├── full/kfold_easy/        # 完整模型, kfold, easy
+├── full/loso_hard/         # 完整模型, loso, hard
+├── no_gamma/kfold_easy/    # 去掉 Gamma 分布, kfold, easy
+├── no_gamma/loso_hard/
+├── no_grl/...              # 去掉 GRL
+├── lstm/...                # LSTM 替换
+├── logs/                   # 所有实验的日志
+│   ├── full_kfold_easy.log
+│   ├── no_gamma_loso_hard.log
+│   └── ...
+└── ...
+```
+
+### CLI 消融参数
+
+`run_loso.py` 和 `run_group_kfold.py` 均支持 `--ablation` 参数，可以直接在命令行覆盖消融配置，无需修改 YAML：
+
+```bash
+# 去掉 GRL 的 LOSO
+python scripts/run_loso.py \
+  --task-mode easy \
+  --ablation enable_grl=false \
+  --exp-name ablation_no_grl
+
+# 去掉 Gamma + 去掉 Soft-DTW 的 KFold
+python scripts/run_group_kfold.py \
+  --task-mode hard \
+  --ablation enable_gamma=false enable_soft_dtw=false \
+  --exp-name ablation_noGamma_noSDTW \
+  --output-dir ./outputs/ablation/noGamma_noSDTW
+
+# LSTM 替换
+python scripts/run_loso.py \
+  --task-mode easy \
+  --ablation temporal_encoder=lstm \
+  --exp-name ablation_lstm
+
+# Gaussian 分布替换
+python scripts/run_loso.py \
+  --task-mode easy \
+  --ablation reference_distribution=gaussian \
+  --exp-name ablation_gaussian
+
+# KDE 分布替换
+python scripts/run_loso.py \
+  --task-mode easy \
+  --ablation reference_distribution=kde \
+  --exp-name ablation_kde
+
+
+CUDA_VISIBLE_DEVICES=6 nohup python scripts/run_loso.py --task-mode hard > result_loso_hard_1024_512_0710.out &
+```
+
+也支持 `--exp-name` 和 `--output-dir` 覆盖实验名称和输出路径。
+
+手动 `nohup` 单个实验：
+
+```bash
+CUDA_VISIBLE_DEVICES=0 nohup python scripts/run_loso.py \
+  --config configs/default.yaml \
+  --task-mode easy \
+  --ablation enable_grl=false \
+  --exp-name ablation_no_grl \
+  --output-dir ./outputs/ablation/no_grl/loso_easy \
+  > logs/no_grl_loso_easy.log 2>&1 &
+```
+
+```
+CUDA_VISIBLE_DEVICES=0 nohup python scripts/run_loso.py   --config configs/default.yaml   --task-mode easy   --ablation enable_grl=false   --exp-name ablation_no_grl   --output-dir ./outputs/ablation/no_grl/loso_easy   > no_grl_loso_easy.log & 
+
+nohup python scripts/run_loso.py   --config configs/default.yaml   --task-mode easy   --ablation enable_gamma=false   --exp-name ablation_no_gamma   --output-dir ./outputs/ablation/no_gamma/loso_easy   > no_gamma_loso_easy.log & 
+
+CUDA_VISIBLE_DEVICES=3 nohup python scripts/run_loso.py   --config configs/default.yaml   --task-mode easy   --ablation enable_gamma=false   --exp-name ablation_no_gamma   --output-dir ./outputs/ablation/no_gamma/loso_easy  > no_gamma_loso_easy.log &
+```
+
+## 数据划分：验证集与测试集
+
+在 `configs/default.yaml` 的 `split` 段配置：
+
+```yaml
+split:
+  test_subjects: ["19", "20"]   # hold-out 测试被试；[] 表示不设独立测试集
+  explicit_folds: [["01","05","14","19"], ["02","06","10","15"], ...]  # 显式 fold 划分
+```
+
+- **`test_subjects`**：训练时整体 hold-out，不进入任何 fold 的 train/val。训练结束后用 `evaluate.py --run-dir` 做最终评估。留空 `[]` 则不设独立测试集。
+- **`explicit_folds`**：形如 `[["01","02"], ...]`，每个子列表是该 fold 的 val 被试。设为 `null` 时按 LOSO/GroupKFold 自动生成。
+
+## 最佳轮选择与早停
+
+训练按 `training.result_selection` 从所有 epoch 中选出最佳一轮写入 `final_metrics.csv`，而非使用最后一个 epoch：
+
+```yaml
+training:
+  result_selection:
+    monitor: "val_f1"
+    mode: "max"
+    min_delta: 0.0
+  early_stopping:
+    enabled: true
+    monitor: "val_f1"
+    mode: "max"
+    patience: 1000      # 等效于不提前停止，跑完全部 epoch 后选最佳轮
+    min_delta: 1.0e-4
+```
+
+`best.pt` 也按 `result_selection` 保存，保证模型权重和最终 CSV 对应同一轮。
+
+## CSV 输出
+
+每个 fold：
+
+```
+outputs/<fold>_<task_mode>/history.csv         # 逐 epoch 训练记录
+outputs/<fold>_<task_mode>/final_metrics.csv   # 最佳轮指标
+outputs/<fold>_<task_mode>/best.pt             # 最佳轮 checkpoint
+```
+
+汇总（末尾含 `mean`/`std` 行）：
+
+```
+loso_metrics_<task_mode>.csv
+group_kfold_metrics_<task_mode>.csv
+```
+
+### 指标字段
+
+基础指标：`auc`, `acc`, `f1`, `precision`, `recall`
+
+混淆矩阵：`cm_tn`, `cm_fp`, `cm_fn`, `cm_tp`
+
+训练记录中每个指标带 `train_`/`val_` 前缀，另含 `train_loss`, `val_loss`, `grl_lambda`, `adv_ce`, `subject_acc`。
+
+`final_metrics.csv` 额外包含：`best_epoch`, `selection_monitor`, `selection_mode`, `selection_value`。
+
+## 超参数记录
+
+每次训练在输出目录写 `hparams.json`，集中记录全部超参数，便于对比与消融溯源：
+
+```json
+{
+  "script": "run_loso.py",
+  "task_mode": "easy",
+  "seed": 42,
+  "exp_name": "ADFNet_Exp_loso",
+  "git_commit": "...",
+  "n_folds": 20,
+  "val_subjects_per_fold": [["01"], ["02"], ...],
+  "config": { ... }
+}
+```
+
+## 性能调优
 
 ```yaml
 training:
@@ -234,13 +459,28 @@ training:
   persistent_workers: true
 
 distribution:
-  soft_dtw_reference_samples: 64
+  soft_dtw_reference_samples: 64  # 降到 32 可加速，但精度略降
 ```
 
-如果 CPU 仍然慢，可以把 `soft_dtw_reference_samples` 降到 `32`。
+Soft-DTW 是 O(n*m) 复杂度，`soft_dtw_reference_samples` 控制参考序列下采样长度。分布特征在每个 fold 开始前预计算并缓存，避免每个 batch 重复计算。
 
 ## 测试
 
 ```bash
-pytest
+pytest                      # 运行全部测试
+pytest tests/test_ablation.py -v   # 仅运行消融测试
+```
+
+需要 `mamba-ssm` 的测试会自动跳过（`@pytest.mark.skipif`），在 Linux CUDA 服务器上运行即可覆盖。
+
+## 环境要求
+
+- Python >= 3.10
+- PyTorch >= 2.0
+- mamba-ssm（需 CUDA，Linux 环境）
+- scipy, scikit-learn, pandas, numpy, pyyaml, tqdm, matplotlib
+
+```bash
+pip install -r requirements.txt
+pip install mamba-ssm
 ```

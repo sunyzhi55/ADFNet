@@ -82,5 +82,20 @@ training:
 evaluation:
   metrics_csv: metrics.csv
 
+# ──────────────────────────────────────────────────────
+# 消融实验（Ablation Study）
+# 各开关默认 true（完整模型）。设为 false 即移除对应组件。
+# 由 scripts/run_ablation.py 自动遍历所有组合，也可单独覆盖。
+# ──────────────────────────────────────────────────────
+ablation:
+  enable_gamma: true         # Gamma 分布对齐流（DistributionBranch + GammaReference）
+  enable_grl: true           # GRL 梯度反转 + 身份对抗判别器
+  enable_diff: true          # 一阶差分通道（ADF channel 1）
+  enable_sliding_mean: true  # 滑动均值通道（ADF channel 2）
+  enable_soft_dtw: true      # Soft-DTW 分布距离（分布特征 3→2）
+  enable_mamba: true         # Mamba-MLA 时序编码器
+  temporal_encoder: "mamba"  # 时序编码器类型: mamba | lstm | transformer
+  reference_distribution: "gamma"  # 基准分布类型: gamma | gaussian | kde
+
 
 # ulimit -n 65535 # 增加文件描述符限制，以支持更多的并发数据加载

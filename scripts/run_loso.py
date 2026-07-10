@@ -19,11 +19,41 @@ from utils.logging import setup_logger
 from datetime import datetime
 import time
 
+def _parse_ablation_arg(values: list[str] | None) -> dict:
+    """将 CLI '--ablation key=value ...' 解析为 dict。
+
+    布尔值自动识别：true/false/yes/no/1/0。
+    """
+    if not values:
+        return {}
+    result: dict = {}
+    for item in values:
+        if "=" not in item:
+            raise ValueError(f"--ablation 参数格式错误，期望 key=value: {item}")
+        key, raw = item.split("=", 1)
+        key = key.strip()
+        raw = raw.strip()
+        if raw.lower() in ("true", "yes", "1"):
+            result[key] = True
+        elif raw.lower() in ("false", "no", "0"):
+            result[key] = False
+        else:
+            try:
+                result[key] = int(raw)
+            except ValueError:
+                result[key] = raw
+    return result
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run subject-wise LOSO training/evaluation for ADFNet")
     parser.add_argument("--config", default="configs/default.yaml")
     parser.add_argument("--task-mode", choices=["all", "easy", "hard"], default=None)
     parser.add_argument("--max-folds", type=int, default=None)
+    parser.add_argument("--ablation", nargs="+", default=None,
+                        help="消融覆盖，形如 key=value (例: enable_grl=false enable_diff=false)")
+    parser.add_argument("--exp-name", default=None, help="覆盖 exp_name")
+    parser.add_argument("--output-dir", default=None, help="覆盖 training.output_dir")
     return parser.parse_args()
 
 
@@ -42,6 +72,16 @@ def main() -> None:
     args = parse_args()
     cfg = load_config(args.config)
     set_seed(cfg["seed"])
+
+    # CLI 覆盖
+    if args.exp_name:
+        cfg["exp_name"] = args.exp_name
+    if args.output_dir:
+        cfg["training"]["output_dir"] = args.output_dir
+    if args.ablation:
+        abl = dict(cfg.get("ablation") or {})
+        abl.update(_parse_ablation_arg(args.ablation))
+        cfg["ablation"] = abl
 
     timestamp = str(datetime.now().strftime('%Y%m%d_%H%M%S'))
     cfg["training"]["output_dir"] = f"{cfg['training']['output_dir']}_{timestamp}_{cfg['exp_name']}/"

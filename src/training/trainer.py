@@ -11,7 +11,7 @@ from utils.basic import get_optimizer, get_scheduler
 
 from data.dataset import ADFWindowDataset, collect_alert_distances
 from models.adfnet import ADFNet
-from models.distribution import GammaReference
+from models.distribution import GammaReference, ReferenceDistribution
 from training.losses import ADFNetLoss, grl_lambda_schedule
 from training.metrics import binary_metrics
 
@@ -138,15 +138,29 @@ def resolve_device(name: str) -> torch.device:
     return torch.device(name)
 
 
-def build_gamma_reference(train_dataset: ADFWindowDataset, cfg: dict, seed: int) -> GammaReference:
+def get_ablation(cfg: dict) -> dict:
+    """从 config 读取消融配置，缺失键用默认值（全部启用）补全。"""
+    from models.adfnet import _parse_ablation
+    return _parse_ablation(cfg.get("ablation"))
+
+
+def build_gamma_reference(
+    train_dataset: ADFWindowDataset,
+    cfg: dict,
+    seed: int,
+    enable_soft_dtw: bool = True,
+    reference_distribution: str = "gamma",
+) -> ReferenceDistribution:
     distances = collect_alert_distances(train_dataset)
-    return GammaReference.fit(
+    return ReferenceDistribution.fit(
         distances,
+        dist_type=reference_distribution,
         reference_sample_count=cfg["distribution"]["reference_samples"],
         eps=cfg["distribution"]["eps"],
         soft_dtw_gamma=cfg["distribution"]["soft_dtw_gamma"],
         soft_dtw_reference_samples=cfg["distribution"].get("soft_dtw_reference_samples", 64),
         seed=seed,
+        enable_soft_dtw=enable_soft_dtw,
     )
 
 
@@ -154,6 +168,9 @@ def make_model(cfg: dict, n_subjects: int | None = None) -> ADFNet:
     model_cfg = dict(cfg["model"])
     if n_subjects is not None:
         model_cfg["n_subjects"] = n_subjects
+    # 把 ablation 配置透传到 ADFNet
+    if "ablation" in cfg:
+        model_cfg["ablation"] = cfg["ablation"]
     return ADFNet(**model_cfg)
 
 
@@ -174,7 +191,7 @@ def run_epoch(
     epoch: int,
     model: ADFNet,
     loader: DataLoader,
-    gamma_reference: GammaReference,
+    gamma_reference: GammaReference | None,
     criterion: ADFNetLoss,
     device: torch.device,
     optimizer: torch.optim.Optimizer | None,
@@ -261,32 +278,56 @@ def train_fold(
     output_dir = Path(cfg["training"]["output_dir"]) / fold_name
     output_dir.mkdir(parents=True, exist_ok=True)
     device = resolve_device(cfg["training"]["device"])
-    gamma_reference = build_gamma_reference(train_dataset, cfg, cfg["seed"])
-    dist_stats_mean, dist_stats_std = train_dataset.attach_distribution_stats(
-        gamma_reference,
-        cfg["distribution"]["feature_window"],
-    )
-    val_dataset.attach_distribution_stats(
-        gamma_reference,
-        cfg["distribution"]["feature_window"],
-        dist_stats_mean,
-        dist_stats_std,
-    )
-    # GRL 对抗目标：从训练 fold 构造 subject_id->int 映射。验证/留出被试映射不到，
-    # 保持 -1，由损失里的 ignore_index 忽略，绝不混入对抗。
-    subject_mapping = build_subject_mapping(train_dataset)
-    train_dataset.attach_subject_labels(subject_mapping)
-    val_dataset.attach_subject_labels(subject_mapping)
-    cfg["model"]["n_subjects"] = len(subject_mapping)
+
+    abl = get_ablation(cfg)
+
+    # ── Gamma 分布参考（仅当分布分支启用时构建） ──
+    gamma_reference: GammaReference | None = None
+    dist_stats_mean: np.ndarray | None = None
+    dist_stats_std: np.ndarray | None = None
+
+    if abl["enable_gamma"]:
+        gamma_reference = build_gamma_reference(
+            train_dataset, cfg, cfg["seed"],
+            enable_soft_dtw=abl["enable_soft_dtw"],
+            reference_distribution=abl.get("reference_distribution", "gamma"),
+        )
+        dist_stats_mean, dist_stats_std = train_dataset.attach_distribution_stats(
+            gamma_reference,
+            cfg["distribution"]["feature_window"],
+        )
+        val_dataset.attach_distribution_stats(
+            gamma_reference,
+            cfg["distribution"]["feature_window"],
+            dist_stats_mean,
+            dist_stats_std,
+        )
+
+    # ── GRL 对抗目标映射（仅当 GRL 启用时构建） ──
+    subject_mapping: dict[str, int] | None = None
+    if abl["enable_grl"]:
+        subject_mapping = build_subject_mapping(train_dataset)
+        train_dataset.attach_subject_labels(subject_mapping)
+        val_dataset.attach_subject_labels(subject_mapping)
+        cfg["model"]["n_subjects"] = len(subject_mapping)
+    else:
+        # GRL 禁用时对抗项不生效，subject_mapping 保持 None
+        cfg["model"]["n_subjects"] = 1  # 占位，模型不会创建判别器
+
     grl = grl_cfg(cfg)
-    model = make_model(cfg, n_subjects=len(subject_mapping)).to(device)
+    # 消融：GRL 禁用时强制 λ=0 且 loss_weight=0
+    if not abl["enable_grl"]:
+        grl["enabled"] = False
+        grl["loss_weight"] = 0.0
+
+    n_subjects = len(subject_mapping) if subject_mapping else 1
+    model = make_model(cfg, n_subjects=n_subjects).to(device)
     criterion = ADFNetLoss(loss_weight=grl["loss_weight"])
     optimizer = get_optimizer(
         cfg["training"]["optimizer_name"],
         model.parameters(),
         lr=cfg["training"]["lr"],
         weight_decay=cfg["training"]["weight_decay"],
-        # momentum=getattr(args, 'momentum', 0.9)
     )
     train_loader = DataLoader(
         train_dataset,
@@ -368,24 +409,19 @@ def train_fold(
         row["result_selection_best"] = best_epoch.best_value
         row["result_selection_improved"] = result_improved
         if result_improved:
-            torch.save(
-                {
-                    "model": model.state_dict(),
-                    "config": cfg,
-                    "gamma_reference": {
-                        "shape": gamma_reference.shape,
-                        "loc": gamma_reference.loc,
-                        "scale": gamma_reference.scale,
-                        "reference_samples": gamma_reference.reference_samples,
-                    },
-                    "dist_stats_normalizer": {
-                        "mean": dist_stats_mean,
-                        "std": dist_stats_std,
-                    },
-                    "subject_mapping": subject_mapping,
-                },
-                output_dir / "best.pt",
-            )
+            checkpoint: dict = {
+                "model": model.state_dict(),
+                "config": cfg,
+                "subject_mapping": subject_mapping,
+            }
+            if gamma_reference is not None:
+                checkpoint["gamma_reference"] = gamma_reference.to_checkpoint()
+            if dist_stats_mean is not None and dist_stats_std is not None:
+                checkpoint["dist_stats_normalizer"] = {
+                    "mean": dist_stats_mean,
+                    "std": dist_stats_std,
+                }
+            torch.save(checkpoint, output_dir / "best.pt")
         row["early_stop_monitor"] = early_stopping.monitor
         row["early_stop_best"] = early_stopping.best
         row["early_stop_bad_epochs"] = early_stopping.bad_epochs
@@ -409,35 +445,40 @@ def evaluate_checkpoint(
 ) -> dict[str, float]:
     device = resolve_device(cfg["training"]["device"])
     checkpoint = torch.load(checkpoint_path, map_location=device)
-    model = make_model(checkpoint.get("config", cfg)).to(device)
+    saved_cfg = checkpoint.get("config", cfg)
+    model = make_model(saved_cfg).to(device)
     model.load_state_dict(checkpoint["model"])
-    gamma_state = checkpoint["gamma_reference"]
-    gamma_reference = GammaReference(
-        gamma_state["shape"],
-        gamma_state["loc"],
-        gamma_state["scale"],
-        gamma_state["reference_samples"],
-        eps=cfg["distribution"]["eps"],
-        soft_dtw_gamma=cfg["distribution"]["soft_dtw_gamma"],
-        soft_dtw_reference_samples=cfg["distribution"].get("soft_dtw_reference_samples", 64),
-    )
-    normalizer = checkpoint.get("dist_stats_normalizer", {})
-    stats_mean = normalizer.get("mean")
-    stats_std = normalizer.get("std")
-    dataset.attach_distribution_stats(
-        gamma_reference,
-        cfg["distribution"]["feature_window"],
-        None if stats_mean is None else stats_mean,
-        None if stats_std is None else stats_std,
-    )
+
+    abl = get_ablation(saved_cfg)
+
+    # 重建分布参考（仅当分布分支启用时）
+    gamma_reference: ReferenceDistribution | None = None
+    if abl["enable_gamma"]:
+        gamma_state = checkpoint["gamma_reference"]
+        gamma_reference = ReferenceDistribution.from_checkpoint(gamma_state, cfg)
+        normalizer = checkpoint.get("dist_stats_normalizer", {})
+        stats_mean = normalizer.get("mean")
+        stats_std = normalizer.get("std")
+        dataset.attach_distribution_stats(
+            gamma_reference,
+            cfg["distribution"]["feature_window"],
+            None if stats_mean is None else stats_mean,
+            None if stats_std is None else stats_std,
+        )
+
     loader = DataLoader(dataset, batch_size=cfg["training"]["batch_size"], shuffle=False)
     labels: list[float] = []
     probs: list[float] = []
     model.eval()
     for batch in tqdm(loader, leave=False):
+        dist_stats = batch.get("dist_stats")
+        if dist_stats is not None and dist_stats.numel() > 0:
+            dist_stats = dist_stats.to(device, non_blocking=device.type == "cuda")
+        else:
+            dist_stats = None
         outputs = model(
             batch["adf"].to(device, non_blocking=device.type == "cuda"),
-            dist_stats=batch["dist_stats"].to(device, non_blocking=device.type == "cuda"),
+            dist_stats=dist_stats,
             gamma_reference=gamma_reference,
             dist_feature_window=cfg["distribution"]["feature_window"],
             grl_lambda=0.0,

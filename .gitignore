@@ -4,3 +4,8 @@ TF-GAM Task-Completion-Driven Adaptive Modeling for Robust Cross-Subject Fatigue
 print_jsonl.py
 do-thing.md
 result
+ablation_line_only.pdf
+ablation_study.pdf
+lineChart.py
+temp_analysis.md
+__pycache__
