@@ -52,12 +52,20 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
 from data.dataset import ADFWindowDataset
+from data.gaipat_dataset import GaipatWindowDataset, discover_gaipat_sequences
 from data.io import discover_sequences, filter_sequences_by_task
 from data.split import explicit_folds, group_kfold_folds, loso_folds
 from training.seed import set_seed
-from training.trainer import train_fold
+from training.trainer import train_fold, evaluate_checkpoint
 from utils.config import load_config, save_hparams
 from utils.logging import setup_logger
+
+# ── eval_mode 常量 ──
+EVAL_FATIGUE = "fatigue"
+EVAL_FATIGUE_TO_GAIPAT = "fatigue_to_gaipat"
+EVAL_GAIPAT = "gaipat"
+EVAL_GAIPAT_TO_FATIGUE = "gaipat_to_fatigue"
+EVAL_MODES = [EVAL_FATIGUE, EVAL_FATIGUE_TO_GAIPAT, EVAL_GAIPAT, EVAL_GAIPAT_TO_FATIGUE]
 
 # ══════════════════════════════════════════════════════════════
 # 消融组件定义
@@ -135,6 +143,15 @@ def dataset_kwargs(cfg: dict) -> dict:
     return kwargs
 
 
+def gaipat_dataset_kwargs(cfg: dict) -> dict:
+    gaipat_cfg = cfg.get("gaipat", {})
+    return {
+        "window_size": gaipat_cfg.get("window_size", 256),
+        "local_mean_size": gaipat_cfg.get("local_mean_size", cfg["data"].get("local_mean_size", 16)),
+        "per_sample_norm": gaipat_cfg.get("per_sample_norm", True),
+    }
+
+
 def split_cfg(cfg: dict) -> dict:
     return cfg.get("split", {}) or {}
 
@@ -154,17 +171,18 @@ def save_fold_metrics(rows: list[dict], output: Path) -> None:
 # 核心训练流水线
 # ══════════════════════════════════════════════════════════════
 
-def run_loso(cfg: dict, sequences, task_mode: str, logger, max_folds: int | None = None) -> list[dict]:
-    """在给定 config + 序列上跑完整 LOSO，返回每 fold 的指标行。"""
+def run_loso(cfg: dict, sequences, task_mode: str, logger,
+             max_folds: int | None = None, train_on_gaipat: bool = False) -> list[dict]:
     folds = loso_folds(sequences)
     if max_folds is not None:
         folds = folds[:max_folds]
     logger.info("LOSO: %d folds for task_mode=%s", len(folds), task_mode)
-    data_kwargs = dataset_kwargs(cfg)
+    d_kwargs = gaipat_dataset_kwargs(cfg) if train_on_gaipat else dataset_kwargs(cfg)
+    DS = GaipatWindowDataset if train_on_gaipat else ADFWindowDataset
     rows: list[dict] = []
     for fold in folds:
-        train_ds = ADFWindowDataset(sequences=fold.train, **data_kwargs)
-        val_ds = ADFWindowDataset(sequences=fold.val, **data_kwargs)
+        train_ds = DS(sequences=fold.train, **d_kwargs)
+        val_ds = DS(sequences=fold.val, **d_kwargs)
         logger.info("%s: train=%d, val=%d", fold.name, len(train_ds), len(val_ds))
         if len(train_ds) == 0 or len(val_ds) == 0:
             logger.warning("%s has empty samples, skipped", fold.name)
@@ -179,24 +197,29 @@ def run_loso(cfg: dict, sequences, task_mode: str, logger, max_folds: int | None
 
 
 def run_kfold(cfg: dict, sequences, task_mode: str, logger,
-              n_splits: int = 5, max_folds: int | None = None) -> list[dict]:
-    """在给定 config + 序列上跑 GroupKFold / explicit_folds，返回每 fold 的指标行。"""
-    test_subjects = split_cfg(cfg).get("test_subjects", []) or []
-    explicit = split_cfg(cfg).get("explicit_folds")
-    if explicit:
-        folds = explicit_folds(sequences, explicit, test_subjects)
-        logger.info("Using explicit_folds: %d folds", len(folds))
+              n_splits: int = 5, max_folds: int | None = None,
+              train_on_gaipat: bool = False) -> list[dict]:
+    if train_on_gaipat:
+        folds = group_kfold_folds(sequences, n_splits=n_splits, seed=cfg["seed"])
+        logger.info("GroupKFold(n_splits=%d) on GAIPAT: %d folds", n_splits, len(folds))
     else:
-        folds = group_kfold_folds(sequences, n_splits=n_splits, seed=cfg["seed"],
-                                  test_subjects=test_subjects)
-        logger.info("GroupKFold(n_splits=%d): %d folds", n_splits, len(folds))
+        test_subjects = split_cfg(cfg).get("test_subjects", []) or []
+        explicit = split_cfg(cfg).get("explicit_folds")
+        if explicit:
+            folds = explicit_folds(sequences, explicit, test_subjects)
+            logger.info("Using explicit_folds: %d folds", len(folds))
+        else:
+            folds = group_kfold_folds(sequences, n_splits=n_splits, seed=cfg["seed"],
+                                      test_subjects=test_subjects)
+            logger.info("GroupKFold(n_splits=%d): %d folds", n_splits, len(folds))
     if max_folds is not None:
         folds = folds[:max_folds]
-    data_kwargs = dataset_kwargs(cfg)
+    d_kwargs = gaipat_dataset_kwargs(cfg) if train_on_gaipat else dataset_kwargs(cfg)
+    DS = GaipatWindowDataset if train_on_gaipat else ADFWindowDataset
     rows: list[dict] = []
     for fold in folds:
-        train_ds = ADFWindowDataset(sequences=fold.train, **data_kwargs)
-        val_ds = ADFWindowDataset(sequences=fold.val, **data_kwargs)
+        train_ds = DS(sequences=fold.train, **d_kwargs)
+        val_ds = DS(sequences=fold.val, **d_kwargs)
         logger.info("%s: val_subjects=%s  train=%d, val=%d",
                     fold.name, list(fold.val_subjects), len(train_ds), len(val_ds))
         if len(train_ds) == 0 or len(val_ds) == 0:
@@ -211,31 +234,72 @@ def run_kfold(cfg: dict, sequences, task_mode: str, logger,
     return rows
 
 
+def run_cross_eval(cfg: dict, folds, task_mode: str, eval_on_gaipat: bool,
+                   gaipat_dir: str, output_dir: str, checkpoint_dir: str | None,
+                   logger) -> list[dict]:
+    """跨数据集评估：加载每个 fold 的 best.pt，在目标数据集上评估。"""
+    if eval_on_gaipat:
+        sequences = discover_gaipat_sequences(gaipat_dir)
+        test_dataset = GaipatWindowDataset(sequences=sequences, **gaipat_dataset_kwargs(cfg))
+        logger.info("Cross-eval target: GAIPAT (%d windows)", len(test_dataset))
+    else:
+        d_kwargs = dataset_kwargs(cfg)
+        target_seqs = filter_sequences_by_task(discover_sequences(cfg["data"]["root"]), task_mode)
+        test_dataset = ADFWindowDataset(sequences=target_seqs, **d_kwargs)
+        logger.info("Cross-eval target: FatigueGuard (%d windows, task_mode=%s)",
+                    len(test_dataset), task_mode)
+    if len(test_dataset) == 0:
+        logger.warning("Cross-eval target dataset is empty, skipping")
+        return []
+
+    ckpt_base = Path(checkpoint_dir) if checkpoint_dir else Path(output_dir)
+    cross_rows = []
+    for fold in folds:
+        ckpt_path = ckpt_base / f"{fold.name}_{task_mode}" / "best.pt"
+        if not ckpt_path.exists():
+            logger.warning("Checkpoint not found: %s", ckpt_path)
+            continue
+        try:
+            metrics = evaluate_checkpoint(cfg, test_dataset, ckpt_path)
+            logger.info("Cross-eval %s: %s", fold.name, metrics)
+            cross_rows.append({
+                "fold": fold.name, "task_mode": task_mode,
+                "target": "gaipat" if eval_on_gaipat else "fatigue", **metrics,
+            })
+        except Exception as exc:
+            logger.warning("Cross-eval %s failed: %s", fold.name, exc)
+    return cross_rows
+
+
 # ══════════════════════════════════════════════════════════════
 # 主入口
 # ══════════════════════════════════════════════════════════════
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(
-        description="ADFNet 消融实验启动器",
+        description="ADFNet Ablation Study Launcher",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=__doc__,
     )
     p.add_argument("--preset", default="full", choices=list(PRESETS.keys()),
-                   help="消融预设（默认 full = 完整模型基线）")
+                   help="Ablation preset (default: full)")
     p.add_argument("--cv", default="both", choices=["kfold", "loso", "both"],
-                   help="交叉验证方式（默认 both = kfold + loso 都跑）")
+                   help="Cross-validation: kfold, loso, both (default: both)")
     p.add_argument("--task-mode", nargs="+", default=["easy", "hard"],
                    choices=["easy", "hard"],
-                   help="任务难度，可多选（默认 easy hard 都跑）")
-    p.add_argument("--config", default="configs/default.yaml", help="基线配置文件")
-    p.add_argument("--output-base", default="./outputs/ablation",
-                   help="消融实验输出根目录")
-    p.add_argument("--n-splits", type=int, default=5, help="GroupKFold 折数")
-    p.add_argument("--max-folds", type=int, default=None,
-                   help="每种 CV 最多跑几个 fold（调试用）")
-    p.add_argument("--device", default=None,
-                   help="覆盖 training.device（如 cuda:1）")
+                   help="Task difficulty (default: easy hard)")
+    p.add_argument("--config", default="configs/default.yaml")
+    p.add_argument("--output-base", default="./outputs/ablation")
+    p.add_argument("--n-splits", type=int, default=5)
+    p.add_argument("--max-folds", type=int, default=None)
+    p.add_argument("--device", default=None)
+    # ── cross-dataset ──
+    p.add_argument("--eval-mode", choices=EVAL_MODES, default=EVAL_FATIGUE,
+                   help="fatigue | fatigue_to_gaipat | gaipat | gaipat_to_fatigue")
+    p.add_argument("--gaipat-dir", default=None,
+                   help="GAIPAT data root (overrides gaipat.root in config)")
+    p.add_argument("--checkpoint-dir", default=None,
+                   help="Skip training; load fold checkpoints for cross-dataset evaluation")
     return p.parse_args()
 
 
@@ -244,36 +308,42 @@ def main() -> None:
     base_cfg = load_config(args.config)
     set_seed(base_cfg["seed"])
 
-    # 确定本次要跑的消融覆盖列表
-    preset_val = PRESETS[args.preset]
-    if preset_val is None:
-        # all_combinations
-        overrides_list = generate_all_combinations()
-    else:
-        overrides_list = [preset_val]
+    eval_mode = args.eval_mode
+    train_on_gaipat = eval_mode in (EVAL_GAIPAT, EVAL_GAIPAT_TO_FATIGUE)
+    eval_on_gaipat = eval_mode in (EVAL_FATIGUE_TO_GAIPAT, EVAL_GAIPAT)
+    is_cross = eval_mode in (EVAL_FATIGUE_TO_GAIPAT, EVAL_GAIPAT_TO_FATIGUE)
+    gaipat_dir = args.gaipat_dir or base_cfg.get("gaipat", {}).get("root", "")
+    skip_training = args.checkpoint_dir is not None
 
-    task_modes = args.task_mode
+    preset_val = PRESETS[args.preset]
+    overrides_list = generate_all_combinations() if preset_val is None else [preset_val]
+
+    # GAIPAT 无 easy/hard → task_mode 强制 all
+    task_modes = ["all"] if train_on_gaipat else args.task_mode
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
 
-    # 发现数据序列（只需做一次）
-    sequences_all = discover_sequences(base_cfg["data"]["root"])
+    # 发现数据序列
+    if train_on_gaipat:
+        sequences_all = discover_gaipat_sequences(gaipat_dir)
+    else:
+        sequences_all = discover_sequences(base_cfg["data"]["root"])
     logger_root = setup_logger(args.output_base, name="ablation_launcher")
-    logger_root.info("Preset: %s → %d ablation config(s), cv=%s, task_modes=%s",
-                     args.preset, len(overrides_list), args.cv, task_modes)
+    logger_root.info("eval_mode=%s | preset=%s -> %d config(s) | cv=%s | task_modes=%s",
+                     eval_mode, args.preset, len(overrides_list), args.cv, task_modes)
 
     all_results: list[dict] = []
+    all_cross_results: list[dict] = []
     t_start = time.time()
 
     for idx, overrides in enumerate(overrides_list):
         label = ablation_label(overrides)
         run_dir = f"{args.output_base}/{timestamp}_{label}"
-
-        logger_root.info("[%d/%d] Ablation: %s  →  %s", idx + 1, len(overrides_list), label, run_dir)
+        logger_root.info("[%d/%d] Ablation: %s -> %s", idx + 1, len(overrides_list), label, run_dir)
 
         for task_mode in task_modes:
             sequences = filter_sequences_by_task(list(sequences_all), task_mode)
             if not sequences:
-                logger_root.warning("No sequences for task_mode=%s, skipping", task_mode)
+                logger_root.warning("No sequences for task_mode=%s", task_mode)
                 continue
 
             # ── KFold ──
@@ -289,20 +359,43 @@ def main() -> None:
 
                 logger = setup_logger(cfg["training"]["output_dir"],
                                      name=f"kfold_{label}_{task_mode}")
-                logger.info("Ablation: %s | KFold | task_mode=%s", label, task_mode)
+                logger.info("Ablation: %s | KFold | task_mode=%s | eval_mode=%s",
+                            label, task_mode, eval_mode)
                 save_hparams(
                     cfg, cfg["training"]["output_dir"],
                     script="run_ablation.py", task_mode=task_mode, timestamp=timestamp,
                     extra={"ablation_label": label, "cv": "kfold",
-                           "ablation_overrides": overrides, "preset": args.preset},
+                           "eval_mode": eval_mode, "ablation_overrides": overrides,
+                           "preset": args.preset},
                 )
 
-                rows = run_kfold(cfg, sequences, task_mode, logger,
-                                n_splits=args.n_splits, max_folds=args.max_folds)
-                for r in rows:
-                    r["ablation"] = label
-                    r["cv"] = "kfold"
-                all_results.extend(rows)
+                if not skip_training:
+                    rows = run_kfold(cfg, sequences, task_mode, logger,
+                                    n_splits=args.n_splits, max_folds=args.max_folds,
+                                    train_on_gaipat=train_on_gaipat)
+                    for r in rows:
+                        r["ablation"] = label
+                        r["cv"] = "kfold"
+                    all_results.extend(rows)
+
+                # 跨数据集评估
+                if is_cross:
+                    folds = group_kfold_folds(sequences, n_splits=args.n_splits,
+                                              seed=cfg["seed"])
+                    if args.max_folds is not None:
+                        folds = folds[:args.max_folds]
+                    cross_rows = run_cross_eval(
+                        cfg, folds, task_mode, eval_on_gaipat, gaipat_dir,
+                        cfg["training"]["output_dir"], args.checkpoint_dir, logger,
+                    )
+                    for r in cross_rows:
+                        r["ablation"] = label
+                        r["cv"] = "kfold"
+                    all_cross_results.extend(cross_rows)
+                    if cross_rows:
+                        tgt = "gaipat" if eval_on_gaipat else "fatigue"
+                        out = Path(cfg["training"]["output_dir"]) / f"kfold_cross_to_{tgt}_{task_mode}.csv"
+                        save_fold_metrics(cross_rows, out)
 
             # ── LOSO ──
             if args.cv in ("loso", "both"):
@@ -317,26 +410,51 @@ def main() -> None:
 
                 logger = setup_logger(cfg["training"]["output_dir"],
                                      name=f"loso_{label}_{task_mode}")
-                logger.info("Ablation: %s | LOSO | task_mode=%s", label, task_mode)
+                logger.info("Ablation: %s | LOSO | task_mode=%s | eval_mode=%s",
+                            label, task_mode, eval_mode)
                 save_hparams(
                     cfg, cfg["training"]["output_dir"],
                     script="run_ablation.py", task_mode=task_mode, timestamp=timestamp,
                     extra={"ablation_label": label, "cv": "loso",
-                           "ablation_overrides": overrides, "preset": args.preset},
+                           "eval_mode": eval_mode, "ablation_overrides": overrides,
+                           "preset": args.preset},
                 )
 
-                rows = run_loso(cfg, sequences, task_mode, logger,
-                               max_folds=args.max_folds)
-                for r in rows:
-                    r["ablation"] = label
-                    r["cv"] = "loso"
-                all_results.extend(rows)
+                if not skip_training:
+                    rows = run_loso(cfg, sequences, task_mode, logger,
+                                   max_folds=args.max_folds,
+                                   train_on_gaipat=train_on_gaipat)
+                    for r in rows:
+                        r["ablation"] = label
+                        r["cv"] = "loso"
+                    all_results.extend(rows)
 
-    # ── 汇总所有结果 ──
+                if is_cross:
+                    folds = loso_folds(sequences)
+                    if args.max_folds is not None:
+                        folds = folds[:args.max_folds]
+                    cross_rows = run_cross_eval(
+                        cfg, folds, task_mode, eval_on_gaipat, gaipat_dir,
+                        cfg["training"]["output_dir"], args.checkpoint_dir, logger,
+                    )
+                    for r in cross_rows:
+                        r["ablation"] = label
+                        r["cv"] = "loso"
+                    all_cross_results.extend(cross_rows)
+                    if cross_rows:
+                        tgt = "gaipat" if eval_on_gaipat else "fatigue"
+                        out = Path(cfg["training"]["output_dir"]) / f"loso_cross_to_{tgt}_{task_mode}.csv"
+                        save_fold_metrics(cross_rows, out)
+
+    # ── 汇总 ──
     if all_results:
         summary_path = Path(args.output_base) / f"{timestamp}_ablation_summary.csv"
         save_fold_metrics(all_results, summary_path)
-        logger_root.info("All ablation results saved to %s", summary_path)
+        logger_root.info("Training results saved to %s", summary_path)
+    if all_cross_results:
+        cross_path = Path(args.output_base) / f"{timestamp}_cross_eval_summary.csv"
+        save_fold_metrics(all_cross_results, cross_path)
+        logger_root.info("Cross-eval results saved to %s", cross_path)
 
     elapsed = time.time() - t_start
     h, m, s = int(elapsed // 3600), int((elapsed % 3600) // 60), int(elapsed % 60)

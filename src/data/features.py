@@ -35,10 +35,11 @@ def compute_adf_features(
     records: list[dict],
     task_type: str,
     local_mean_size: int = 16,
+    per_sample_norm: bool = False,
 ) -> np.ndarray:
     distances: list[float] = []
     for record in records:
-        deviation = record.get("deviation_px_after_calibrate")
+        deviation = record.get("deviation_px_before_calibrate")
         if deviation is not None:
             try:
                 distances.append(float(deviation))
@@ -56,6 +57,9 @@ def compute_adf_features(
         distances.append(nearest_target_distance(gaze_xy, target))
 
     drift = np.asarray(distances, dtype=np.float32)
+    if per_sample_norm:
+        lo, hi = float(drift.min()), float(drift.max())
+        drift = ((drift - lo) / (hi - lo + 1e-8)).astype(np.float32)
     diff = np.diff(drift, prepend=drift[:1])
     local_mean = sliding_mean(drift, local_mean_size)
     return np.stack([drift, diff.astype(np.float32), local_mean], axis=-1)

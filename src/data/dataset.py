@@ -35,6 +35,7 @@ class ADFWindowDataset(Dataset):
         landmark_dim: int = 70,
         min_confidence: float | None = None,
         task_mode: str = "all",
+        per_sample_norm: bool = False,
     ) -> None:
         if sequences is None:
             if root is None:
@@ -56,7 +57,7 @@ class ADFWindowDataset(Dataset):
             if len(records) < window_size:
                 continue
 
-            adf = compute_adf_features(records, info.task_type, local_mean_size)
+            adf = compute_adf_features(records, info.task_type, local_mean_size, per_sample_norm)
             # The range upper bound intentionally drops the trailing fragment
             # when a sequence length is not divisible by stride/window size.
             for start in range(0, len(records) - window_size + 1, stride):

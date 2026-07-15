@@ -9,3 +9,7 @@ ablation_study.pdf
 lineChart.py
 temp_analysis.md
 __pycache__
+*.pdf
+*.png
+bar.py
+radar.py

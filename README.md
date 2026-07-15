@@ -20,6 +20,7 @@ ADFNet/
 ├── src/
 │   ├── data/
 │   │   ├── dataset.py            # ADFWindowDataset, WindowSample
+│   │   ├── gaipat_dataset.py     # GaipatWindowDataset (GAIPAT 公开数据集)
 │   │   ├── features.py           # compute_adf_features, sliding_mean
 │   │   ├── io.py                 # SequenceInfo, discover_sequences
 │   │   └── split.py              # SubjectFold, loso_folds, group_kfold_folds
@@ -131,6 +132,143 @@ python scripts/evaluate.py \
   --config configs/default.yaml \
   --run-dir outputs/<timestamp>_ADFNet_Exp_loso/ \
   --task-mode hard
+```
+
+## GAIPAT 公开数据集与跨数据集实验
+
+### GAIPAT 数据集
+
+GAIPAT 是一个公开的视线交互数据集，包含 `release` 和 `grasp` 两类交互任务。每个试次（trial）以 JSONL 文件存储，包含 256 帧的视线偏差数据。
+
+**目录结构：**
+
+```
+<gaipat_root>/
+├── release/
+│   ├── 5530740_house_4_release_21_0.jsonl
+│   └── ...
+└── grasp/
+    ├── 5530740_house_4_grasp_21_1.jsonl
+    └── ...
+```
+
+**文件命名规则：** `{subject_id}_{task}_{step}_{event}_{block_id}_{label}.jsonl`
+
+**标签映射：**
+
+| 标签 | 含义 | 对应 FatigueGuard |
+|------|------|-------------------|
+| 0 | 分心 (Distracted/Wandering) | 1 = sleepy |
+| 1 | 专注 (Focused) | 0 = alert |
+| 2, 3 | 丢弃 | — |
+
+**核心特征：** `deviation_cm`（视线偏差距离，厘米）。
+
+### 归一化策略
+
+由于 FatigueGuard（像素）和 GAIPAT（厘米）的单位不一致，所有实验启用 **per-sample Min-Max 归一化**：
+
+```
+drift_normalized = (drift - min) / (max - min + eps)  →  [0, 1]
+```
+
+在 `configs/default.yaml` 中控制：
+
+```yaml
+data:
+  per_sample_norm: true   # FatigueGuard
+
+gaipat:
+  per_sample_norm: true   # GAIPAT
+```
+
+### 四种实验模式
+
+通过 `--eval-mode` 参数控制训练与测试的数据集组合：
+
+| eval_mode | 训练集 | 测试集 | 说明 |
+|-----------|--------|--------|------|
+| `fatigue` | FatigueGuard | FatigueGuard | 同源实验（默认） |
+| `fatigue_to_gaipat` | FatigueGuard | GAIPAT | 跨数据集泛化 |
+| `gaipat` | GAIPAT | GAIPAT | GAIPAT 同源实验 |
+| `gaipat_to_fatigue` | GAIPAT | FatigueGuard | 反向跨数据集泛化 |
+
+### 运行跨数据集实验
+
+**实验 1：FatigueGuard 同源（已实现）**
+
+```bash
+python scripts/run_loso.py --eval-mode fatigue --task-mode easy
+python scripts/run_group_kfold.py --eval-mode fatigue --task-mode hard
+```
+
+**实验 2：FatigueGuard 训练 → GAIPAT 测试**
+
+```bash
+# 训练完成后自动评估 GAIPAT
+python scripts/run_loso.py --eval-mode fatigue_to_gaipat --task-mode easy \
+  --gaipat-dir /path/to/gaipat/final_relabelled
+
+# 跳过训练，直接加载已有 checkpoint 评估 GAIPAT
+python scripts/run_loso.py --eval-mode fatigue_to_gaipat --task-mode easy \
+  --gaipat-dir /path/to/gaipat/final_relabelled \
+  --checkpoint-dir outputs/<prev_run_dir>
+```
+
+**实验 3：GAIPAT 同源**
+
+```bash
+python scripts/run_loso.py --eval-mode gaipat \
+  --gaipat-dir /path/to/gaipat/final_relabelled
+
+python scripts/run_group_kfold.py --eval-mode gaipat --n-splits 5 \
+  --gaipat-dir /path/to/gaipat/final_relabelled
+```
+
+**实验 4：GAIPAT 训练 → FatigueGuard 测试**
+
+```bash
+python scripts/run_loso.py --eval-mode gaipat_to_fatigue \
+  --gaipat-dir /path/to/gaipat/final_relabelled
+
+# 仅评估（跳过训练）
+python scripts/run_loso.py --eval-mode gaipat_to_fatigue \
+  --gaipat-dir /path/to/gaipat/final_relabelled \
+  --checkpoint-dir outputs/<gaipat_run_dir>
+```
+
+### 消融实验 + 跨数据集
+
+`run_ablation.py` 同样支持 `--eval-mode`：
+
+```bash
+# 完整模型：FG 训练 → GAIPAT 测试
+python scripts/run_ablation.py --preset full --eval-mode fatigue_to_gaipat \
+  --gaipat-dir /path/to/gaipat
+
+# 去掉 GRL 的跨数据集评估
+python scripts/run_ablation.py --preset no_grl --eval-mode fatigue_to_gaipat \
+  --gaipat-dir /path/to/gaipat
+
+# GAIPAT 同源消融
+python scripts/run_ablation.py --preset all_combinations --eval-mode gaipat \
+  --gaipat-dir /path/to/gaipat --cv loso
+
+# 仅加载 checkpoint 做跨数据集评估
+python scripts/run_ablation.py --preset full --eval-mode gaipat_to_fatigue \
+  --checkpoint-dir outputs/ablation/<gaipat_run>
+```
+
+### 输出结构
+
+跨数据集实验每个 fold 同时输出同源和跨数据集两份 CSV：
+
+```
+outputs/<run_dir>/
+├── loso_metrics_easy.csv                    # 同源（训练集验证）
+├── loso_cross_to_gaipat_easy.csv            # 跨数据集（GAIPAT 测试）
+├── loso_<fold>_easy/best.pt                 # 模型权重
+└── hparams.json
 ```
 
 ## 消融实验

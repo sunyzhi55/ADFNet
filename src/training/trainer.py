@@ -10,6 +10,7 @@ from tqdm import tqdm
 from utils.basic import get_optimizer, get_scheduler
 
 from data.dataset import ADFWindowDataset, collect_alert_distances
+from data.gaipat_dataset import GaipatWindowDataset, collect_gaipat_alert_distances
 from models.adfnet import ADFNet
 from models.distribution import GammaReference, ReferenceDistribution
 from training.losses import ADFNetLoss, grl_lambda_schedule
@@ -145,13 +146,16 @@ def get_ablation(cfg: dict) -> dict:
 
 
 def build_gamma_reference(
-    train_dataset: ADFWindowDataset,
+    train_dataset,
     cfg: dict,
     seed: int,
     enable_soft_dtw: bool = True,
     reference_distribution: str = "gamma",
 ) -> ReferenceDistribution:
-    distances = collect_alert_distances(train_dataset)
+    if isinstance(train_dataset, GaipatWindowDataset):
+        distances = collect_gaipat_alert_distances(train_dataset)
+    else:
+        distances = collect_alert_distances(train_dataset)
     return ReferenceDistribution.fit(
         distances,
         dist_type=reference_distribution,
@@ -174,7 +178,7 @@ def make_model(cfg: dict, n_subjects: int | None = None) -> ADFNet:
     return ADFNet(**model_cfg)
 
 
-def build_subject_mapping(train_dataset: ADFWindowDataset) -> dict[str, int]:
+def build_subject_mapping(train_dataset) -> dict[str, int]:
     """从训练 fold 构造 subject_id -> 整数标签映射（按 id 排序，保证可复现）。"""
     subjects = sorted({sample.subject_id for sample in train_dataset.samples})
     return {sid: idx for idx, sid in enumerate(subjects)}
@@ -271,8 +275,8 @@ def run_epoch(
 
 def train_fold(
     cfg: dict,
-    train_dataset: ADFWindowDataset,
-    val_dataset: ADFWindowDataset,
+    train_dataset,
+    val_dataset,
     fold_name: str = "default",
 ) -> dict[str, float]:
     output_dir = Path(cfg["training"]["output_dir"]) / fold_name
@@ -440,7 +444,7 @@ def train_fold(
 @torch.no_grad()
 def evaluate_checkpoint(
     cfg: dict,
-    dataset: ADFWindowDataset,
+    dataset,
     checkpoint_path: str | Path,
 ) -> dict[str, float]:
     device = resolve_device(cfg["training"]["device"])

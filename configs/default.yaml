@@ -9,6 +9,13 @@ data:
   local_mean_size: 16
   landmark_dim: 10
   min_confidence: null
+  per_sample_norm: true  # per-sample Min-Max normalization on raw drift → [0,1]
+
+gaipat:
+  root: "/root/autodl-tmp/shenxy/Data/gaipat/final_relabelled"
+  window_size: 256
+  local_mean_size: 16
+  per_sample_norm: true  # GAIPAT deviation_cm → [0,1]，跨数据集必须启用
 
 # 数据划分：把「验证集（选轮用）」与「测试集（最终报告用）」分开。
 # test_subjects 中的被试在训练时被整体 hold-out，不进入任何 fold 的 train/val，
