@@ -17,6 +17,9 @@
 
     temporal_encoder: lstm        - 用 LSTM 替换 Mamba-MLA
     temporal_encoder: transformer - 用 Transformer 替换 Mamba-MLA
+    reference_distribution: gaussian  - 用高斯分布替换 Gamma 分布
+    reference_distribution: kde       - 用核密度估计替换 Gamma 分布
+    reference_distribution: lognormal - 用对数正态分布替换 Gamma 分布
 
 用法示例::
 
@@ -98,6 +101,7 @@ PRESETS: dict[str, dict | None] = {
     "transformer":     {"temporal_encoder": "transformer"},
     "gaussian":        {"reference_distribution": "gaussian"},
     "kde":             {"reference_distribution": "kde"},
+    "lognormal":       {"reference_distribution": "lognormal"},
 }
 
 
@@ -117,6 +121,9 @@ def ablation_label(overrides: dict) -> str:
     enc = overrides.get("temporal_encoder")
     if enc and enc != "mamba":
         parts.append(enc)
+    dist = overrides.get("reference_distribution")
+    if dist and dist != "gamma":
+        parts.append(dist)
     return "_".join(parts) if parts else "full"
 
 

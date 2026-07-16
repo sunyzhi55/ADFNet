@@ -298,12 +298,12 @@ def test_standalone_encoder_shapes(EncoderCls_name):
 
 
 # ══════════════════════════════════════════════════════════════
-# Gaussian / KDE 分布替换消融
+# Gaussian / LogNormal / KDE 分布替换消融
 # ══════════════════════════════════════════════════════════════
 
-@pytest.mark.parametrize("dist_type", ["gamma", "gaussian", "kde"])
+@pytest.mark.parametrize("dist_type", ["gamma", "gaussian", "lognormal", "kde"])
 def test_reference_distribution_fit_and_features(dist_type):
-    """三种分布类型均能拟合、计算特征、输出正确维度。"""
+    """四种分布类型均能拟合、计算特征、输出正确维度。"""
     import numpy as np
     from models.distribution import ReferenceDistribution
 
@@ -325,7 +325,7 @@ def test_reference_distribution_fit_and_features(dist_type):
 
 
 def test_reference_distribution_checkpoint_roundtrip():
-    """三种分布类型的 checkpoint 序列化/反序列化均正确。"""
+    """四种分布类型的 checkpoint 序列化/反序列化均正确。"""
     import numpy as np
     from models.distribution import ReferenceDistribution
 
@@ -334,7 +334,7 @@ def test_reference_distribution_checkpoint_roundtrip():
     cfg = {"distribution": {"eps": 1e-6, "soft_dtw_gamma": 1.0,
                             "soft_dtw_reference_samples": 32}}
 
-    for dist_type in ["gamma", "gaussian", "kde"]:
+    for dist_type in ["gamma", "gaussian", "lognormal", "kde"]:
         ref = ReferenceDistribution.fit(data, dist_type=dist_type,
                                         reference_sample_count=32)
         state = ref.to_checkpoint()
@@ -377,3 +377,67 @@ def test_parse_ablation_reference_distribution_default():
 
     abl = _parse_ablation({"reference_distribution": "kde"})
     assert abl["reference_distribution"] == "kde"
+
+    abl_ln = _parse_ablation({"reference_distribution": "lognormal"})
+    assert abl_ln["reference_distribution"] == "lognormal"
+
+
+# ══════════════════════════════════════════════════════════════
+# LogNormal 分布拟合专项测试
+# ══════════════════════════════════════════════════════════════
+
+def test_lognormal_distribution_fit_params():
+    """LogNormal 拟合应存储 lognorm_s/lognorm_loc/lognorm_scale 参数。"""
+    import numpy as np
+    from models.distribution import ReferenceDistribution
+
+    rng = np.random.default_rng(42)
+    # 生成对数正态分布数据: log(X) ~ N(1.0, 0.5^2)
+    data = rng.lognormal(mean=1.0, sigma=0.5, size=500).astype(np.float32)
+
+    ref = ReferenceDistribution.fit(
+        data, dist_type="lognormal",
+        reference_sample_count=128,
+        enable_soft_dtw=True,
+    )
+    assert ref.dist_type == "lognormal"
+    assert "lognorm_s" in ref.params
+    assert "lognorm_loc" in ref.params
+    assert "lognorm_scale" in ref.params
+    assert ref.params["lognorm_s"] > 0
+    assert ref.reference_samples.shape == (128,)
+    assert all(s > 0 for s in ref.reference_samples)  # 对数正态样本 > 0
+
+    # 特征计算
+    feats = ref.window_features(data[:50])
+    assert len(feats) == 3
+    assert all(np.isfinite(f) for f in feats)
+
+
+def test_lognormal_distribution_synthetic_goodness_of_fit():
+    """合成对数正态数据上, LogNormal 的 AIC 应优于 Gaussian。"""
+    import numpy as np
+    from scipy.stats import lognorm as scipy_lognorm, norm as scipy_norm
+    from models.distribution import ReferenceDistribution
+
+    rng = np.random.default_rng(123)
+    data = rng.lognormal(mean=0.5, sigma=0.8, size=500).astype(np.float32)
+    clean = np.clip(data, 1e-6, None).astype(np.float64)
+
+    ref_ln = ReferenceDistribution.fit(data, dist_type="lognormal",
+                                       reference_sample_count=64)
+    ref_gauss = ReferenceDistribution.fit(data, dist_type="gaussian",
+                                          reference_sample_count=64)
+
+    # Log-likelihood under each model
+    ll_ln = scipy_lognorm.logpdf(
+        clean, ref_ln.params["lognorm_s"],
+        loc=ref_ln.params["lognorm_loc"],
+        scale=ref_ln.params["lognorm_scale"],
+    ).sum()
+    ll_gauss = scipy_norm.logpdf(
+        clean, loc=ref_gauss.params["mu"], scale=ref_gauss.params["sigma"],
+    ).sum()
+
+    # 对数正态数据的 LogNormal 似然应显著优于 Gaussian
+    assert ll_ln > ll_gauss

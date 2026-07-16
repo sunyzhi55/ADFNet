@@ -2,17 +2,17 @@ from __future__ import annotations
 
 import numpy as np
 import torch
-from scipy.stats import gamma as scipy_gamma
+from scipy.stats import gamma as scipy_gamma, lognorm as scipy_lognorm
 from scipy.stats import norm as scipy_norm
 from scipy.stats import wasserstein_distance
 from torch import nn
 
 
 class ReferenceDistribution:
-    """警觉基准分布：支持 Gamma / Gaussian / KDE 三种拟合方式。
+    """警觉基准分布：支持 Gamma / Gaussian / LogNormal / KDE 四种拟合方式。
 
     统一接口：fit() 拟合 + features()/window_features() 计算分布对齐特征。
-    Gamma 分布为默认选项；Gaussian 与 KDE 用于消融替换实验。
+    Gamma 分布为默认选项；Gaussian、LogNormal 与 KDE 用于消融替换实验。
     """
 
     def __init__(
@@ -26,8 +26,8 @@ class ReferenceDistribution:
         soft_dtw_reference_samples: int | None = 64,
         enable_soft_dtw: bool = True,
     ) -> None:
-        if dist_type not in ("gamma", "gaussian", "kde"):
-            raise ValueError(f"dist_type must be gamma/gaussian/kde, got {dist_type}")
+        if dist_type not in ("gamma", "gaussian", "lognormal", "kde"):
+            raise ValueError(f"dist_type must be gamma/gaussian/lognormal/kde, got {dist_type}")
         self.dist_type = dist_type
         self.params = params
         self.reference_samples = np.asarray(reference_samples, dtype=np.float32)
@@ -73,6 +73,17 @@ class ReferenceDistribution:
             sigma = max(sigma, eps)
             refs = rng.normal(mu, sigma, size=reference_sample_count)
             params = {"mu": mu, "sigma": sigma}
+
+        elif dist_type == "lognormal":
+            # 对数正态分布: log(X) ~ N(mu, sigma^2)
+            # scipy 参数化: lognorm(s=sigma, loc=0, scale=exp(mu))
+            # floc=0 固定位置参数, 与 Gamma (floc=0) 保持一致
+            s, loc, scale = scipy_lognorm.fit(clean, floc=0.0)
+            refs = scipy_lognorm.rvs(
+                s, loc=loc, scale=scale,
+                size=reference_sample_count, random_state=rng,
+            )
+            params = {"lognorm_s": float(s), "lognorm_loc": float(loc), "lognorm_scale": float(scale)}
 
         elif dist_type == "kde":
             from scipy.stats import gaussian_kde
@@ -138,6 +149,13 @@ class ReferenceDistribution:
             )
         elif self.dist_type == "gaussian":
             return scipy_norm.logpdf(clean, loc=self.params["mu"], scale=self.params["sigma"])
+        elif self.dist_type == "lognormal":
+            return scipy_lognorm.logpdf(
+                clean,
+                self.params["lognorm_s"],
+                loc=self.params["lognorm_loc"],
+                scale=self.params["lognorm_scale"],
+            )
         elif self.dist_type == "kde":
             from scipy.stats import gaussian_kde
             kde = gaussian_kde(self.data_points)

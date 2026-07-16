@@ -102,7 +102,7 @@ ablation:
   enable_soft_dtw: true      # Soft-DTW 分布距离（分布特征 3→2）
   enable_mamba: true         # Mamba-MLA 时序编码器
   temporal_encoder: "mamba"  # 时序编码器类型: mamba | lstm | transformer
-  reference_distribution: "gamma"  # 基准分布类型: gamma | gaussian | kde
+  reference_distribution: "gamma"  # 基准分布类型: gamma | gaussian | lognormal | kde
 
 
 # ulimit -n 65535 # 增加文件描述符限制，以支持更多的并发数据加载
