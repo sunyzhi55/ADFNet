@@ -8,8 +8,10 @@ ablation_line_only.pdf
 ablation_study.pdf
 lineChart.py
 temp_analysis.md
-__pycache__
-*.pdf
+# __pycache__
+ablation_per_subject_acc.pdf
+ablation_on_params_w_s.pdf
+# *.pdf
 *.png
 bar.py
 radar.py

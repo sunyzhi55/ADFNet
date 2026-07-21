@@ -151,7 +151,7 @@ class GaipatWindowDataset(Dataset):
             self.samples.append(
                 GaipatWindowSample(
                     adf=adf.astype(np.float32),
-                    label=info.label,
+                    label=(info.label + 1) % 2,  # GAIPAT: 0=分心,1=专注 → ADF: 0=专注,1=分心
                     subject_id=info.subject_id,
                     event_type=info.task_type,
                     path=info.path,

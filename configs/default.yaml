@@ -12,7 +12,7 @@ data:
   per_sample_norm: true  # per-sample Min-Max normalization on raw drift → [0,1]
 
 gaipat:
-  root: "/root/autodl-tmp/shenxy/Data/gaipat/final_relabelled"
+  root: "/data3/wangchangmiao/shenxy/Code/gaze/GAIPAT_Data_20260719"
   window_size: 256
   local_mean_size: 16
   per_sample_norm: true  # GAIPAT deviation_cm → [0,1]，跨数据集必须启用

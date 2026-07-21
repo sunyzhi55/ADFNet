@@ -134,6 +134,53 @@ python scripts/evaluate.py \
   --task-mode hard
 ```
 
+## FatigueGuard 数据集
+
+### 预处理结果
+
+(1) Easy 任务数据格式：
+```
+{
+  "timestamp": 4.16,
+  "frame_idx": 100,
+  "pitch_yaw_rad": [0.12, -0.34],
+  "gaze_xyz": [0.01, -0.03, 0.99],
+  "gaze_screen_xy_mm": [315.2, 182.1],
+  "gaze_screen_xy_px": [1345, 702],
+  "gaze_screen_tf_calibrate_xy_px": [1268.4, 713.2],
+  "target_xy_px": [1280, 720],
+  "deviation_px_before_calibrate": 65.35,
+  "deviation_px_after_calibrate": 13.19,
+  "face_detection_bbox": [412, 216, 871, 799],
+  "facial_landmark_35": [[520.0, 311.0], [541.0, 320.0]],
+  "RetinaFace_bbox": [412, 216, 871, 799],
+  "RetinaFace_landmarks": [[520.0, 311.0], [541.0, 320.0]],
+  "confidence": 0.998
+}
+```
+
+(2) Hard 任务数据格式：
+```
+{
+  "timestamp": 4.16,
+  "frame_idx": 100,
+  "pitch_yaw_rad": [0.12, -0.34],
+  "gaze_xyz": [0.01, -0.03, 0.99],
+  "gaze_screen_xy_mm": [315.2, 182.1],
+  "gaze_screen_xy_px": [1345, 702],
+  "gaze_screen_tf_calibrate_xy_px": [1268.4, 713.2],
+  "target_centers_xy_px": [[1280, 720], [960, 540]],
+  "deviation_px_before_calibrate": 67.12,
+  "deviation_px_after_calibrate": 13.70,
+  "face_detection_bbox": [412, 216, 871, 799],
+  "facial_landmark_35": [[520.0, 311.0], [541.0, 320.0]],
+  "RetinaFace_bbox": [412, 216, 871, 799],
+  "RetinaFace_landmarks": [[520.0, 311.0], [541.0, 320.0]],
+  "confidence": 0.998
+}
+```
+
+
 ## GAIPAT 公开数据集与跨数据集实验
 
 ### GAIPAT 数据集
@@ -206,34 +253,31 @@ python scripts/run_group_kfold.py --eval-mode fatigue --task-mode hard
 
 ```bash
 # 训练完成后自动评估 GAIPAT
-python scripts/run_loso.py --eval-mode fatigue_to_gaipat --task-mode easy \
-  --gaipat-dir /path/to/gaipat/final_relabelled
+nohup python scripts/run_loso.py --eval-mode fatigue_to_gaipat --task-mode easy --gaipat-dir /data3/wangchangmiao/shenxy/Code/gaze/GAIPAT_Data_20260719 > result_loso_easy_fatigue_to_gaipat_0720.out &
 
 # 跳过训练，直接加载已有 checkpoint 评估 GAIPAT
-python scripts/run_loso.py --eval-mode fatigue_to_gaipat --task-mode easy \
-  --gaipat-dir /path/to/gaipat/final_relabelled \
-  --checkpoint-dir outputs/<prev_run_dir>
+python scripts/run_loso.py --eval-mode fatigue_to_gaipat --task-mode easy --gaipat-dir /data3/wangchangmiao/shenxy/Code/gaze/GAIPAT_Data_20260719 --checkpoint-dir outputs/<prev_run_dir>
 ```
 
 **实验 3：GAIPAT 同源**
 
 ```bash
 python scripts/run_loso.py --eval-mode gaipat \
-  --gaipat-dir /path/to/gaipat/final_relabelled
+  --gaipat-dir /data3/wangchangmiao/shenxy/Code/gaze/GAIPAT_Data_20260719
 
 python scripts/run_group_kfold.py --eval-mode gaipat --n-splits 5 \
-  --gaipat-dir /path/to/gaipat/final_relabelled
+  --gaipat-dir /data3/wangchangmiao/shenxy/Code/gaze/GAIPAT_Data_20260719
 ```
 
 **实验 4：GAIPAT 训练 → FatigueGuard 测试**
 
 ```bash
 python scripts/run_loso.py --eval-mode gaipat_to_fatigue \
-  --gaipat-dir /path/to/gaipat/final_relabelled
+  --gaipat-dir /data3/wangchangmiao/shenxy/Code/gaze/GAIPAT_Data_20260719
 
 # 仅评估（跳过训练）
 python scripts/run_loso.py --eval-mode gaipat_to_fatigue \
-  --gaipat-dir /path/to/gaipat/final_relabelled \
+  --gaipat-dir /data3/wangchangmiao/shenxy/Code/gaze/GAIPAT_Data_20260719 \
   --checkpoint-dir outputs/<gaipat_run_dir>
 ```
 
@@ -243,25 +287,25 @@ python scripts/run_loso.py --eval-mode gaipat_to_fatigue \
 
 ```bash
 # 完整模型：FG 训练 → GAIPAT 测试
-python scripts/run_ablation.py --preset full --eval-mode fatigue_to_gaipat \
-  --gaipat-dir /path/to/gaipat
+python scripts/run_ablation.py --preset full --eval-mode fatigue_to_gaipat --gaipat-dir /path/to/gaipat
+
+
+nohup python scripts/run_ablation.py --preset full --eval-mode fatigue_to_gaipat --gaipat-dir /data3/wangchangmiao/shenxy/Code/gaze/GAIPAT_Data_20260719 > result_ablation_full_fatigue_to_gaipat_0720.out &
+
 
 # 去掉 GRL 的跨数据集评估
-python scripts/run_ablation.py --preset no_grl --eval-mode fatigue_to_gaipat \
-  --gaipat-dir /path/to/gaipat
+python scripts/run_ablation.py --preset no_grl --eval-mode fatigue_to_gaipat --gaipat-dir /path/to/gaipat
 
 # GAIPAT 同源消融
-python scripts/run_ablation.py --preset all_combinations --eval-mode gaipat \
-  --gaipat-dir /path/to/gaipat --cv loso
+python scripts/run_ablation.py --preset all_combinations --eval-mode gaipat --gaipat-dir /path/to/gaipat --cv loso
 
 # 仅加载 checkpoint 做跨数据集评估
-python scripts/run_ablation.py --preset full --eval-mode gaipat_to_fatigue \
-  --checkpoint-dir outputs/ablation/<gaipat_run>
+python scripts/run_ablation.py --preset full --eval-mode gaipat_to_fatigue --gaipat-dir /path/to/gaipat   --checkpoint-dir outputs/ablation/<gaipat_run>
 ```
 
 ### 输出结构
 
-跨数据集实验每个 fold 同时输出同源和跨数据集两份 CSV：
+跨数据集实验每个 fold 同时输出同源和跨数据集两份 CSV:
 
 ```
 outputs/<run_dir>/
