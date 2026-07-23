@@ -20,6 +20,8 @@
     reference_distribution: gaussian  - 用高斯分布替换 Gamma 分布
     reference_distribution: kde       - 用核密度估计替换 Gamma 分布
     reference_distribution: lognormal - 用对数正态分布替换 Gamma 分布
+    reference_distribution: weibull   - 用 Weibull 分布替换 Gamma 分布
+    reference_distribution: rayleigh  - 用 Rayleigh 分布替换 Gamma 分布
 
 用法示例::
 
@@ -102,6 +104,8 @@ PRESETS: dict[str, dict | None] = {
     "gaussian":        {"reference_distribution": "gaussian"},
     "kde":             {"reference_distribution": "kde"},
     "lognormal":       {"reference_distribution": "lognormal"},
+    "weibull":         {"reference_distribution": "weibull"},
+    "rayleigh":        {"reference_distribution": "rayleigh"},
 }
 
 

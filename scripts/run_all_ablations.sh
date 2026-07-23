@@ -10,7 +10,7 @@
 #   bash scripts/run_all_ablations.sh [模式] [选项]
 #
 # 模式:
-#   all              全部 64 种组合 + LSTM/Transformer/Gaussian/KDE/LogNormal 替换 (默认)
+#   all              全部 64 种组合 + LSTM/Transformer/Gaussian/KDE/LogNormal/Weibull/Rayleigh 替换 (默认)
 #   single <preset>  单个预设 (full/no_gamma/no_grl/...)
 #   combinations     仅 64 种组合
 #   lstm             LSTM 替换 × 5 个其他开关的 32 种组合
@@ -18,6 +18,8 @@
 #   gaussian         Gaussian 替换 × 5 个其他开关的 32 种组合
 #   kde              KDE 替换 × 5 个其他开关的 32 种组合
 #   lognormal        LogNormal 替换 × 5 个其他开关的 32 种组合
+#   weibull          Weibull 替换 × 5 个其他开关的 32 种组合
+#   rayleigh         Rayleigh 替换 × 5 个其他开关的 32 种组合
 #   status           查看运行状态
 #
 # 选项:
@@ -72,7 +74,7 @@ SINGLE_PRESET=""
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        all|combinations|lstm|transformer|gaussian|kde|lognormal|status)
+        all|combinations|lstm|transformer|gaussian|kde|lognormal|weibull|rayleigh|status)
             MODE="$1"; shift ;;
         single)
             MODE="single"
@@ -140,6 +142,8 @@ declare -A PRESET_ARGS=(
     [gaussian]="reference_distribution=gaussian"
     [kde]="reference_distribution=kde"
     [lognormal]="reference_distribution=lognormal"
+    [weibull]="reference_distribution=weibull"
+    [rayleigh]="reference_distribution=rayleigh"
 )
 
 # ===================== 日志目录 =====================
@@ -392,6 +396,12 @@ case "$MODE" in
         while IFS= read -r line; do
             JOB_ENTRIES+=("$line")
         done < <(generate_dist_replacements "lognormal")
+        while IFS= read -r line; do
+            JOB_ENTRIES+=("$line")
+        done < <(generate_dist_replacements "weibull")
+        while IFS= read -r line; do
+            JOB_ENTRIES+=("$line")
+        done < <(generate_dist_replacements "rayleigh")
         ;;
     combinations)
         while IFS= read -r line; do
@@ -429,6 +439,16 @@ case "$MODE" in
         while IFS= read -r line; do
             JOB_ENTRIES+=("$line")
         done < <(generate_dist_replacements "lognormal")
+        ;;
+    weibull)
+        while IFS= read -r line; do
+            JOB_ENTRIES+=("$line")
+        done < <(generate_dist_replacements "weibull")
+        ;;
+    rayleigh)
+        while IFS= read -r line; do
+            JOB_ENTRIES+=("$line")
+        done < <(generate_dist_replacements "rayleigh")
         ;;
     *)
         echo "未知模式: $MODE"; exit 1 ;;

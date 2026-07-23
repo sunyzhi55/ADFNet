@@ -59,7 +59,8 @@ ADFNet/
                           ┌─────────────────────┐       │          │   ┌───────────────┐
   dist_stats [B,3] ──────▶│   分布偏移分支       │──▶ dist_feature  │ concat │──▶ fusion_feature
   (log-lik, wass, sdtw)   │ (Gamma/LogNormal/   │   [B, dist_dim]  │        │   [B, fusion_dim]
-                          │  Gaussian/KDE + MLP)│       └──────────┘   └───────┬───────┘
+                          │  Gaussian/Weibull/  │       └──────────┘   └───────┬───────┘
+                          │  Rayleigh/KDE + MLP)│
                                                                                │
                                                               ┌────────────────┼────────────────┐
                                                               ▼                │                ▼
@@ -75,7 +76,7 @@ ADFNet/
 ## 核心组件
 
 - **ADF 三通道特征**：空间漂移（gaze-target 距离）、一阶差分（变化率）、局部滑动均值（趋势平滑）。
-- **Gamma 清醒基准分布**：仅使用当前训练 fold 的 alert 样本拟合 Gamma 分布（也支持 Gaussian / LogNormal / KDE 替换），计算 Mean Log-Likelihood、Wasserstein 距离、Soft-DTW 距离作为分布偏移特征，避免测试主体泄露。
+- **Gamma 清醒基准分布**：仅使用当前训练 fold 的 alert 样本拟合 Gamma 分布（也支持 Gaussian / LogNormal / Weibull / Rayleigh / KDE 替换），计算 Mean Log-Likelihood、Wasserstein 距离、Soft-DTW 距离作为分布偏移特征，避免测试主体泄露。
 - **Mamba-MLA 时序编码器**：基于 `mamba-ssm` 的选择性状态空间模型，带残差连接和 LayerNorm，mean pooling 输出。
 - **GRL 对抗解耦**：以 subject_id 分类为对抗目标（交叉熵 + GRL），剥离个人身份/注视习惯噪声。身份标签与疲劳标签正交（每被试 alert/sleep 各半），对抗擦除不会系统性擦除疲劳信号。
 - **任务模式过滤**：支持 `easy`、`hard`、`all` 三种训练/评估模式。
@@ -339,12 +340,14 @@ outputs/<run_dir>/
 | `temporal_encoder: lstm` | 用双向 LSTM 替换 Mamba-MLA |
 | `temporal_encoder: transformer` | 用 Transformer（含正弦位置编码）替换 Mamba-MLA |
 
-3 种分布拟合替换实验（独立运行，不参与组合遍历）：
+5 种分布拟合替换实验（独立运行，不参与组合遍历）：
 
 | 替换 | 说明 |
 |------|------|
 | `reference_distribution: gaussian` | 用高斯分布替换 Gamma 分布（对称分布假设对比） |
 | `reference_distribution: lognormal` | 用对数正态分布替换 Gamma 分布（重尾正偏分布对比） |
+| `reference_distribution: weibull` | 用 Weibull 分布替换 Gamma 分布（灵活形状参数正偏分布对比） |
+| `reference_distribution: rayleigh` | 用 Rayleigh 分布替换 Gamma 分布（单参数正偏分布对比） |
 | `reference_distribution: kde` | 用核密度估计替换 Gamma 分布（非参数方法对比） |
 
 ### 配置
@@ -360,7 +363,7 @@ ablation:
   enable_soft_dtw: true
   enable_mamba: true
   temporal_encoder: "mamba"           # mamba | lstm | transformer
-  reference_distribution: "gamma"     # gamma | gaussian | lognormal | kde
+  reference_distribution: "gamma"     # gamma | gaussian | lognormal | weibull | rayleigh | kde
 ```
 
 ### 用法
@@ -384,10 +387,12 @@ python scripts/run_ablation.py --preset all_combinations
 python scripts/run_ablation.py --preset lstm
 python scripts/run_ablation.py --preset transformer
 
-# Gaussian / KDE / LogNormal 分布替换
+# Gaussian / KDE / LogNormal / Weibull / Rayleigh 分布替换
 python scripts/run_ablation.py --preset gaussian
 python scripts/run_ablation.py --preset kde
 python scripts/run_ablation.py --preset lognormal
+python scripts/run_ablation.py --preset weibull
+python scripts/run_ablation.py --preset rayleigh
 
 # 仅 kfold + easy（加速调试）
 python scripts/run_ablation.py --preset no_grl --cv kfold --task-mode easy
@@ -403,7 +408,7 @@ python scripts/run_ablation.py --preset all_combinations --max-folds 1
 
 | 参数 | 默认值 | 说明 |
 |------|--------|------|
-| `--preset` | `full` | 消融预设：`full`, `no_gamma`, `no_grl`, `no_diff`, `no_sliding_mean`, `no_soft_dtw`, `no_mamba`, `all_combinations`, `lstm`, `transformer`, `gaussian`, `kde`, `lognormal` |
+| `--preset` | `full` | 消融预设：`full`, `no_gamma`, `no_grl`, `no_diff`, `no_sliding_mean`, `no_soft_dtw`, `no_mamba`, `all_combinations`, `lstm`, `transformer`, `gaussian`, `kde`, `lognormal`, `weibull`, `rayleigh` |
 | `--cv` | `both` | 交叉验证：`kfold`, `loso`, `both` |
 | `--task-mode` | `easy hard` | 任务难度，可多选 |
 | `--config` | `configs/default.yaml` | 基线配置文件 |
@@ -438,7 +443,7 @@ outputs/ablation/
 `run_ablation.py` 是串行的（前一个跑完后一个才开始）。在服务器上推荐使用 `scripts/run_all_ablations.sh` 将所有实验以 `nohup` 并行提交到多张 GPU：
 
 ```bash
-# 全部实验（64 组合 + LSTM/Transformer/Gaussian/KDE/LogNormal 替换），自动分配所有 GPU
+# 全部实验（64 组合 + LSTM/Transformer/Gaussian/KDE/LogNormal/Weibull/Rayleigh 替换），自动分配所有 GPU
 bash scripts/run_all_ablations.sh all
 
 # 指定 GPU 和并行度
@@ -461,6 +466,12 @@ bash scripts/run_all_ablations.sh kde
 
 # 仅 LogNormal 替换的 32 种组合
 bash scripts/run_all_ablations.sh lognormal
+
+# 仅 Weibull 替换的 32 种组合
+bash scripts/run_all_ablations.sh weibull
+
+# 仅 Rayleigh 替换的 32 种组合
+bash scripts/run_all_ablations.sh rayleigh
 
 # 单个预设
 bash scripts/run_all_ablations.sh single no_grl
@@ -530,13 +541,19 @@ python scripts/run_loso.py --task-mode easy --ablation reference_distribution=kd
 # LogNormal 分布替换
 python scripts/run_loso.py --task-mode easy --ablation reference_distribution=lognormal --exp-name ablation_lognormal
 
+# Weibull 分布替换
+nohup python scripts/run_loso.py --task-mode easy --ablation reference_distribution=weibull --exp-name ablation_weibull > result_loso_easy_weibull_0722.out &
+
+# Rayleigh 分布替换
+nohup python scripts/run_loso.py --task-mode easy --ablation reference_distribution=rayleigh --exp-name ablation_rayleigh > result_loso_easy_rayleigh_0722.out &
+
 
 CUDA_VISIBLE_DEVICES=6 nohup python scripts/run_loso.py --task-mode hard > result_loso_hard_1024_512_0710.out &
 ```
 
 也支持 `--exp-name` 和 `--output-dir` 覆盖实验名称和输出路径。
 
-手动 `nohup` 单个实验：
+手动 `nohup` 单个实验:
 
 ```bash
 CUDA_VISIBLE_DEVICES=0 nohup python scripts/run_loso.py \

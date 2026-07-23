@@ -23,7 +23,7 @@ def _parse_ablation(ablation: dict | None) -> dict:
         "enable_soft_dtw": True,
         "enable_mamba": True,
         "temporal_encoder": "mamba",  # mamba | lstm | transformer
-        "reference_distribution": "gamma",  # gamma | gaussian | kde
+        "reference_distribution": "gamma",  # gamma | gaussian | lognormal | weibull | rayleigh | kde
     }
     if ablation:
         defaults.update(ablation)

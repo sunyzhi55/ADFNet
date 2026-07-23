@@ -4,15 +4,17 @@ import numpy as np
 import torch
 from scipy.stats import gamma as scipy_gamma, lognorm as scipy_lognorm
 from scipy.stats import norm as scipy_norm
+from scipy.stats import rayleigh as scipy_rayleigh
 from scipy.stats import wasserstein_distance
+from scipy.stats import weibull_min as scipy_weibull
 from torch import nn
 
 
 class ReferenceDistribution:
-    """警觉基准分布：支持 Gamma / Gaussian / LogNormal / KDE 四种拟合方式。
+    """警觉基准分布：支持 Gamma / Gaussian / LogNormal / Weibull / Rayleigh / KDE 六种拟合方式。
 
     统一接口：fit() 拟合 + features()/window_features() 计算分布对齐特征。
-    Gamma 分布为默认选项；Gaussian、LogNormal 与 KDE 用于消融替换实验。
+    Gamma 分布为默认选项；其余分布用于消融替换实验。
     """
 
     def __init__(
@@ -26,8 +28,10 @@ class ReferenceDistribution:
         soft_dtw_reference_samples: int | None = 64,
         enable_soft_dtw: bool = True,
     ) -> None:
-        if dist_type not in ("gamma", "gaussian", "lognormal", "kde"):
-            raise ValueError(f"dist_type must be gamma/gaussian/lognormal/kde, got {dist_type}")
+        if dist_type not in ("gamma", "gaussian", "lognormal", "weibull", "rayleigh", "kde"):
+            raise ValueError(
+                f"dist_type must be gamma/gaussian/lognormal/weibull/rayleigh/kde, got {dist_type}"
+            )
         self.dist_type = dist_type
         self.params = params
         self.reference_samples = np.asarray(reference_samples, dtype=np.float32)
@@ -90,6 +94,26 @@ class ReferenceDistribution:
             kde = gaussian_kde(clean)
             refs = kde.resample(reference_sample_count, seed=rng).flatten()
             params = {}  # KDE 为非参数方法，不存储解析参数
+
+        elif dist_type == "weibull":
+            # Weibull 最小值分布: f(x; c, loc, scale)
+            # floc=0 固定位置参数，与 Gamma/LogNormal 保持一致
+            c, loc, scale = scipy_weibull.fit(clean, floc=0.0)
+            refs = scipy_weibull.rvs(
+                c, loc=loc, scale=scale,
+                size=reference_sample_count, random_state=rng,
+            )
+            params = {"weibull_c": float(c), "weibull_loc": float(loc), "weibull_scale": float(scale)}
+
+        elif dist_type == "rayleigh":
+            # Rayleigh 分布: f(x; loc, scale)，单参数族（shape 固定）
+            # floc=0 固定位置参数
+            loc, scale = scipy_rayleigh.fit(clean, floc=0.0)
+            refs = scipy_rayleigh.rvs(
+                loc=loc, scale=scale,
+                size=reference_sample_count, random_state=rng,
+            )
+            params = {"rayleigh_loc": float(loc), "rayleigh_scale": float(scale)}
 
         else:
             raise ValueError(f"Unknown dist_type: {dist_type}")
@@ -160,6 +184,16 @@ class ReferenceDistribution:
             from scipy.stats import gaussian_kde
             kde = gaussian_kde(self.data_points)
             return kde.logpdf(clean)
+        elif self.dist_type == "weibull":
+            return scipy_weibull.logpdf(
+                clean, self.params["weibull_c"],
+                loc=self.params["weibull_loc"], scale=self.params["weibull_scale"],
+            )
+        elif self.dist_type == "rayleigh":
+            return scipy_rayleigh.logpdf(
+                clean,
+                loc=self.params["rayleigh_loc"], scale=self.params["rayleigh_scale"],
+            )
         raise ValueError(f"Unknown dist_type: {self.dist_type}")
 
     def window_features(self, window: np.ndarray) -> list[float]:
