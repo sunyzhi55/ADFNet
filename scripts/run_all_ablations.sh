@@ -11,7 +11,7 @@
 #
 # 模式:
 #   all              全部 64 种组合 + LSTM/Transformer/Gaussian/KDE/LogNormal/Weibull/Rayleigh 替换 (默认)
-#   single <preset>  单个预设 (full/no_gamma/no_grl/...)
+#   single <preset>  单个预设 (full/no_gamma/no_grl/no_group_prior/...)
 #   combinations     仅 64 种组合
 #   lstm             LSTM 替换 × 5 个其他开关的 32 种组合
 #   transformer      Transformer 替换 × 5 个其他开关的 32 种组合
@@ -139,6 +139,7 @@ declare -A PRESET_ARGS=(
     [no_sliding_mean]="enable_sliding_mean=false"
     [no_soft_dtw]="enable_soft_dtw=false"
     [no_mamba]="enable_mamba=false"
+    [no_group_prior]="enable_group_prior=false"
     [gaussian]="reference_distribution=gaussian"
     [kde]="reference_distribution=kde"
     [lognormal]="reference_distribution=lognormal"

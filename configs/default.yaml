@@ -101,6 +101,8 @@ ablation:
   enable_sliding_mean: true  # 滑动均值通道（ADF channel 2）
   enable_soft_dtw: true      # Soft-DTW 分布距离（分布特征 3→2）
   enable_mamba: true         # Mamba-MLA 时序编码器
+  enable_group_prior: true   # 使用训练集（其他被试）alert 数据拟合参考分布；false 时仅用当前被试前 N% 数据
+  group_prior_fraction: 0.1  # w/o Group Prior 时，当前被试前 N% 时长用于拟合（默认 10%）
   temporal_encoder: "mamba"  # 时序编码器类型: mamba | lstm | transformer
   reference_distribution: "gamma"  # 基准分布类型: gamma | gaussian | lognormal | weibull | rayleigh | kde
 

@@ -333,6 +333,14 @@ outputs/<run_dir>/
 | `enable_soft_dtw` | Soft-DTW 距离 | 分布特征维度 3 → 2 |
 | `enable_mamba` | Mamba-MLA 时序编码器 | 移除整个时序分支 |
 
+1 个独立消融（不参与组合遍历）：
+
+| 开关 | 组件 | 禁用方式 |
+|------|------|----------|
+| `enable_group_prior` | 群体先验（Group Prior） | LOSO 下禁止访问其他被试的清醒数据，仅用当前被试前 10% 时长数据拟合参考分布（自校准） |
+
+**w/o Group Prior 说明**：默认情况下，Gamma 参考分布使用训练集中所有其他被试的 alert 样本拟合（群体先验）。禁用后，模型仅能使用当前被试前 `group_prior_fraction`（默认 10%）时长的数据来拟合参考分布，模拟无历史被试数据可用时的自校准场景。此消融仅在 `enable_gamma=true` 时有效。
+
 2 种时序编码器替换实验（独立运行，不参与组合遍历）：
 
 | 替换 | 说明 |
@@ -362,6 +370,8 @@ ablation:
   enable_sliding_mean: true
   enable_soft_dtw: true
   enable_mamba: true
+  enable_group_prior: true              # 使用其他被试 alert 数据拟合参考分布
+  group_prior_fraction: 0.1             # w/o Group Prior 时当前被试前 N% 时长
   temporal_encoder: "mamba"           # mamba | lstm | transformer
   reference_distribution: "gamma"     # gamma | gaussian | lognormal | weibull | rayleigh | kde
 ```
@@ -379,6 +389,9 @@ python scripts/run_ablation.py --preset no_diff
 python scripts/run_ablation.py --preset no_sliding_mean
 python scripts/run_ablation.py --preset no_soft_dtw
 python scripts/run_ablation.py --preset no_mamba
+
+# w/o Group Prior（LOSO 下仅用当前被试前 10% 数据拟合参考分布）
+python scripts/run_ablation.py --preset no_group_prior --cv loso
 
 # 全部 64 种组合
 python scripts/run_ablation.py --preset all_combinations
@@ -408,7 +421,7 @@ python scripts/run_ablation.py --preset all_combinations --max-folds 1
 
 | 参数 | 默认值 | 说明 |
 |------|--------|------|
-| `--preset` | `full` | 消融预设：`full`, `no_gamma`, `no_grl`, `no_diff`, `no_sliding_mean`, `no_soft_dtw`, `no_mamba`, `all_combinations`, `lstm`, `transformer`, `gaussian`, `kde`, `lognormal`, `weibull`, `rayleigh` |
+| `--preset` | `full` | 消融预设：`full`, `no_gamma`, `no_grl`, `no_diff`, `no_sliding_mean`, `no_soft_dtw`, `no_mamba`, `no_group_prior`, `all_combinations`, `lstm`, `transformer`, `gaussian`, `kde`, `lognormal`, `weibull`, `rayleigh` |
 | `--cv` | `both` | 交叉验证：`kfold`, `loso`, `both` |
 | `--task-mode` | `easy hard` | 任务难度，可多选 |
 | `--config` | `configs/default.yaml` | 基线配置文件 |
@@ -476,6 +489,7 @@ bash scripts/run_all_ablations.sh rayleigh
 # 单个预设
 bash scripts/run_all_ablations.sh single no_grl
 bash scripts/run_all_ablations.sh single full
+bash scripts/run_all_ablations.sh single no_group_prior
 
 # 冒烟测试：每种配置只跑 1 个 fold，仅 kfold + easy
 bash scripts/run_all_ablations.sh all --max-folds 1 --cv kfold --task easy
@@ -537,6 +551,12 @@ python scripts/run_loso.py --task-mode easy --ablation reference_distribution=ga
 
 # KDE 分布替换
 python scripts/run_loso.py --task-mode easy --ablation reference_distribution=kde --exp-name ablation_kde
+
+# w/o Group Prior（LOSO 下仅用当前被试前 10% 数据拟合参考分布）
+python scripts/run_loso.py --task-mode easy --ablation enable_group_prior=false --exp-name ablation_no_group_prior
+
+# w/o Group Prior + 自定义比例（前 20%）
+python scripts/run_loso.py --task-mode easy --ablation enable_group_prior=false group_prior_fraction=0.2 --exp-name ablation_no_group_prior_20pct
 
 # LogNormal 分布替换
 python scripts/run_loso.py --task-mode easy --ablation reference_distribution=lognormal --exp-name ablation_lognormal

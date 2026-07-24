@@ -22,6 +22,8 @@ def _parse_ablation(ablation: dict | None) -> dict:
         "enable_sliding_mean": True,
         "enable_soft_dtw": True,
         "enable_mamba": True,
+        "enable_group_prior": True,       # 使用训练集（其他被试）alert 数据拟合参考分布
+        "group_prior_fraction": 0.1,      # w/o Group Prior 时，当前被试前 N% 时长用于拟合
         "temporal_encoder": "mamba",  # mamba | lstm | transformer
         "reference_distribution": "gamma",  # gamma | gaussian | lognormal | weibull | rayleigh | kde
     }

@@ -13,6 +13,11 @@
     enable_soft_dtw     - Soft-DTW 距离（分布特征 3->2）
     enable_mamba        - Mamba-MLA 时序编码器
 
+独立消融（不参与组合遍历）::
+
+    enable_group_prior  - 群体先验（使用其他被试 alert 数据拟合参考分布）
+                          禁用后仅用当前被试前 10% 时长数据拟合（自校准）
+
 替换实验（独立运行，不参与组合遍历）::
 
     temporal_encoder: lstm        - 用 LSTM 替换 Mamba-MLA
@@ -30,6 +35,9 @@
 
     # 单个消融：去掉 GRL
     python scripts/run_ablation.py --preset no_grl
+
+    # w/o Group Prior：LOSO 下仅用当前被试前 10% 数据拟合参考分布
+    python scripts/run_ablation.py --preset no_group_prior --cv loso
 
     # 全部 64 种组合
     python scripts/run_ablation.py --preset all_combinations
@@ -97,6 +105,7 @@ PRESETS: dict[str, dict | None] = {
     "no_sliding_mean": {"enable_sliding_mean": False},
     "no_soft_dtw":     {"enable_soft_dtw": False},
     "no_mamba":        {"enable_mamba": False},
+    "no_group_prior":  {"enable_group_prior": False},
     # ── 特殊 ──
     "all_combinations": None,
     "lstm":            {"temporal_encoder": "lstm"},
@@ -122,6 +131,8 @@ def ablation_label(overrides: dict) -> str:
         if key in overrides and not overrides[key]:
             short = key.replace("enable_", "")
             parts.append(f"no_{short}")
+    if "enable_group_prior" in overrides and not overrides["enable_group_prior"]:
+        parts.append("no_group_prior")
     enc = overrides.get("temporal_encoder")
     if enc and enc != "mamba":
         parts.append(enc)

@@ -9,8 +9,8 @@ from torch.utils.data import DataLoader
 from tqdm import tqdm
 from utils.basic import get_optimizer, get_scheduler
 
-from data.dataset import ADFWindowDataset, collect_alert_distances
-from data.gaipat_dataset import GaipatWindowDataset, collect_gaipat_alert_distances
+from data.dataset import ADFWindowDataset, collect_alert_distances, collect_subject_prior_distances
+from data.gaipat_dataset import GaipatWindowDataset, collect_gaipat_alert_distances, collect_gaipat_subject_prior_distances
 from models.adfnet import ADFNet
 from models.distribution import GammaReference, ReferenceDistribution
 from training.losses import ADFNetLoss, grl_lambda_schedule
@@ -151,11 +151,37 @@ def build_gamma_reference(
     seed: int,
     enable_soft_dtw: bool = True,
     reference_distribution: str = "gamma",
+    *,
+    use_group_prior: bool = True,
+    val_dataset=None,
+    group_prior_fraction: float = 0.1,
 ) -> ReferenceDistribution:
-    if isinstance(train_dataset, GaipatWindowDataset):
-        distances = collect_gaipat_alert_distances(train_dataset)
+    """构建参考分布。
+
+    当 use_group_prior=True（默认）：使用训练集中所有 alert 样本的 drift 拟合。
+    当 use_group_prior=False（w/o Group Prior 消融）：禁止访问其他被试的清醒数据，
+    仅用 val_dataset（当前被试）前 group_prior_fraction 时长的数据拟合。
+    """
+    if use_group_prior:
+        # 默认：使用训练集（其他被试）的 alert 数据
+        if isinstance(train_dataset, GaipatWindowDataset):
+            distances = collect_gaipat_alert_distances(train_dataset)
+        else:
+            distances = collect_alert_distances(train_dataset)
     else:
-        distances = collect_alert_distances(train_dataset)
+        # w/o Group Prior：仅用当前被试前 fraction 数据（假设前段为清醒）
+        if val_dataset is None:
+            raise ValueError(
+                "val_dataset must be provided when use_group_prior=False"
+            )
+        if isinstance(val_dataset, GaipatWindowDataset):
+            distances = collect_gaipat_subject_prior_distances(
+                val_dataset, fraction=group_prior_fraction
+            )
+        else:
+            distances = collect_subject_prior_distances(
+                val_dataset, fraction=group_prior_fraction
+            )
     return ReferenceDistribution.fit(
         distances,
         dist_type=reference_distribution,
@@ -291,10 +317,15 @@ def train_fold(
     dist_stats_std: np.ndarray | None = None
 
     if abl["enable_gamma"]:
+        use_group_prior = abl.get("enable_group_prior", True)
+        group_prior_fraction = abl.get("group_prior_fraction", 0.1)
         gamma_reference = build_gamma_reference(
             train_dataset, cfg, cfg["seed"],
             enable_soft_dtw=abl["enable_soft_dtw"],
             reference_distribution=abl.get("reference_distribution", "gamma"),
+            use_group_prior=use_group_prior,
+            val_dataset=val_dataset if not use_group_prior else None,
+            group_prior_fraction=group_prior_fraction,
         )
         dist_stats_mean, dist_stats_std = train_dataset.attach_distribution_stats(
             gamma_reference,

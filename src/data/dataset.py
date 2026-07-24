@@ -148,3 +148,23 @@ def collect_alert_distances(dataset: ADFWindowDataset) -> np.ndarray:
     if not values:
         raise ValueError("No alert samples found in the training set; cannot fit Gamma reference")
     return np.concatenate(values, axis=0).astype(np.float32)
+
+
+def collect_subject_prior_distances(
+    dataset: ADFWindowDataset,
+    fraction: float = 0.1,
+) -> np.ndarray:
+    """收集当前被试前 fraction 时长窗口的 drift 值（假设前段为清醒）。
+
+    用于 w/o Group Prior 消融：LOSO 下禁止访问其他被试的清醒数据，
+    仅用当前被试前 10%（默认）时长的数据拟合参考分布。
+    窗口按数据集中的原始顺序（即时间顺序）取前 N 个。
+    """
+    if not dataset.samples:
+        raise ValueError("Empty dataset; cannot collect subject prior distances")
+    if not 0.0 < fraction <= 1.0:
+        raise ValueError(f"fraction must be in (0, 1]; got {fraction}")
+    n_total = len(dataset.samples)
+    n_prior = max(1, int(n_total * fraction))
+    values = [dataset.samples[i].adf[:, 0] for i in range(n_prior)]
+    return np.concatenate(values, axis=0).astype(np.float32)
